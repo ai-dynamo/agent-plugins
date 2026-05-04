@@ -105,61 +105,66 @@ pi --model dynamo/<model-id> -p "Reply exactly ok."
 
 For local Dynamo, the API key is usually not checked. This package defaults to `dynamo-local` if `DYNAMO_API_KEY` is unset.
 
-## One-GPU Dynamo Launcher
+## Local Dynamo Launcher
 
-For local onboarding, this repo includes a single-GPU Dynamo launcher:
+For local onboarding, this repo includes two small Dynamo helper scripts.
+
+First install Dynamo from the current mooncake replay branch:
 
 ```bash
-./scripts/run-dynamo-single-gpu.sh
+./scripts/install-dynamo.sh
 ```
 
-The script:
+That script:
 
 - clones Dynamo into `${XDG_CACHE_HOME:-$HOME/.cache}/pi-dynamo-provider/dynamo`;
 - checks out `ishan/mooncake-replay-hashes` by default;
 - creates `.venv` with `uv`;
 - builds Dynamo Python bindings with `maturin develop --uv`;
-- installs Dynamo with `uv pip install -e .`;
-- starts NATS if `nats-server` is installed and port `4222` is not already in use;
-- launches a single-GPU Dynamo frontend plus one SGLang worker;
+- installs Dynamo with `uv pip install -e .`.
+
+Then launch GLM-4.7-Flash:
+
+```bash
+./scripts/launch-agg-agent.sh
+```
+
+The launch script:
+
+- serves `zai-org/GLM-4.7-Flash` by default;
+- launches one Dynamo frontend plus one SGLang worker;
+- defaults to one visible GPU, `CUDA_VISIBLE_DEVICES=0`, and `--tp 1`;
+- uses file discovery, TCP request plane, and ZMQ event plane;
+- does not require NATS or etcd;
 - enables Dynamo JSONL agent tracing and Pi tool-event ingest.
 
-After the model is ready, the script prints the exact Pi env vars to use from another shell.
+After the model is ready, it prints the exact Pi env vars to use from another shell.
 
-Common overrides:
+Common install overrides:
+
+```bash
+./scripts/install-dynamo.sh --workdir /ephemeral/pi-dynamo
+./scripts/install-dynamo.sh --dynamo-dir /home/nvidia/dynamo
+./scripts/install-dynamo.sh --dynamo-ref ishan/mooncake-replay-hashes
+```
+
+Common launch overrides:
 
 ```bash
 # Pick a different single GPU.
-./scripts/run-dynamo-single-gpu.sh --gpu 1
-
-# Use a smaller model for smoke testing.
-./scripts/run-dynamo-single-gpu.sh --model Qwen/Qwen3-0.6B
-
-# Reuse an existing build.
-./scripts/run-dynamo-single-gpu.sh --skip-build
+./scripts/launch-agg-agent.sh --gpu 1
 
 # Forward extra flags to dynamo.sglang.
-./scripts/run-dynamo-single-gpu.sh -- --disable-cuda-graph
+./scripts/launch-agg-agent.sh -- --disable-cuda-graph
 ```
 
-This wrapper intentionally stays single-GPU for now. For a two-GPU GLM run, use the Dynamo checkout it creates and run Dynamo's upstream agent launch script directly:
+For one worker across multiple GPUs, expose those GPUs and match tensor parallelism:
 
 ```bash
-cd ${XDG_CACHE_HOME:-$HOME/.cache}/pi-dynamo-provider/dynamo
-source .venv/bin/activate
-
-export CUDA_VISIBLE_DEVICES=0,1
-export DYN_HTTP_PORT=18083
-export DYN_DISCOVERY_BACKEND=file
-export DYN_FILE_KV=/tmp/dynamo-file-kv
-export DYN_EVENT_PLANE=nats
-export NATS_SERVER=nats://127.0.0.1:4222
-export DYN_AGENT_TRACE_SINKS=jsonl
-export DYN_AGENT_TRACE_OUTPUT_PATH=/tmp/dynamo-agent-trace.jsonl
-export DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390
-
-bash examples/backends/sglang/launch/agg_agent.sh --tp 2
+./scripts/launch-agg-agent.sh --gpu 0,1 --tp 2
 ```
+
+Use that form if GLM-4.7-Flash does not fit on one GPU.
 
 ## Dynamo Requirements
 
@@ -180,28 +185,42 @@ For tool tracing:
 - Dynamo and Pi must use the same ZMQ endpoint.
 - Pi must run with tools enabled and execute at least one tool.
 
-Example Dynamo launch shape for `examples/backends/sglang/launch/agg_agent.sh`:
+Equivalent manual Dynamo launch shape:
 
 ```bash
-cd /home/nvidia/dynamo
+cd ${XDG_CACHE_HOME:-$HOME/.cache}/pi-dynamo-provider/dynamo
+source .venv/bin/activate
 
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0
 export DYN_HTTP_PORT=18083
 export DYN_DISCOVERY_BACKEND=file
+export DYN_REQUEST_PLANE=tcp
+export DYN_EVENT_PLANE=zmq
 export DYN_FILE_KV=/tmp/dynamo-file-kv
-
-# Required by the KV-routed agg_agent.sh path.
-export DYN_EVENT_PLANE=nats
-export NATS_SERVER=nats://127.0.0.1:4222
-
-# Request trace sink.
 export DYN_AGENT_TRACE_SINKS=jsonl
 export DYN_AGENT_TRACE_OUTPUT_PATH=/tmp/dynamo-agent-trace.jsonl
-
-# Tool-event subscriber endpoint. Pi publishes to this same endpoint.
 export DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390
 
-bash examples/backends/sglang/launch/agg_agent.sh
+python3 -m dynamo.frontend \
+  --discovery-backend file \
+  --request-plane tcp \
+  --event-plane zmq \
+  --router-mode round-robin &
+
+DYN_SYSTEM_PORT=18084 python3 -m dynamo.sglang \
+  --discovery-backend file \
+  --request-plane tcp \
+  --event-plane zmq \
+  --model-path zai-org/GLM-4.7-Flash \
+  --served-model-name zai-org/GLM-4.7-Flash \
+  --page-size 16 \
+  --tp 1 \
+  --trust-remote-code \
+  --enable-streaming-session \
+  --skip-tokenizer-init \
+  --dyn-reasoning-parser glm45 \
+  --dyn-tool-call-parser glm47 \
+  --enable-metrics
 ```
 
 Then run Pi:
@@ -281,8 +300,10 @@ These are the Dynamo variables most commonly needed for Pi traces. Exact launch 
 | `DYN_AGENT_TRACE_OUTPUT_PATH` | `/tmp/dynamo-agent-trace.jsonl` | JSONL trace output path. |
 | `DYN_AGENT_TRACE_JSONL_FLUSH_INTERVAL_MS` | `100` | Optional flush interval for faster interactive validation. |
 | `DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` | `tcp://127.0.0.1:20390` | ZMQ subscriber endpoint for Pi tool events. |
-| `DYN_EVENT_PLANE` | `nats` | Required by some KV-routed Dynamo launches, including the tested `agg_agent.sh` path. |
-| `NATS_SERVER` | `nats://127.0.0.1:4222` | NATS endpoint for Dynamo's event plane. |
+| `DYN_DISCOVERY_BACKEND` | `file` | File-backed local discovery; avoids etcd. |
+| `DYN_REQUEST_PLANE` | `tcp` | TCP request distribution from frontend to worker. |
+| `DYN_EVENT_PLANE` | `zmq` | ZMQ local event plane; avoids NATS. |
+| `DYN_FILE_KV` | `/tmp/dynamo-file-kv` | File discovery state directory. |
 
 </details>
 
@@ -396,7 +417,7 @@ pi -e ./src/index.ts --model dynamo/<model-id>
 
 - Wait for the Dynamo backend to finish loading.
 - Check Dynamo logs for worker registration failures.
-- For `agg_agent.sh`, make sure NATS is running and set `DYN_EVENT_PLANE=nats` plus `NATS_SERVER=nats://127.0.0.1:4222`.
+- For local onboarding, make sure frontend and worker use the same `DYN_DISCOVERY_BACKEND=file`, `DYN_REQUEST_PLANE=tcp`, `DYN_EVENT_PLANE=zmq`, and `DYN_FILE_KV`.
 
 Pi says the model is unknown:
 
