@@ -23,7 +23,7 @@
 		"dynamo",
 		"openai-compatible"
 	],
-	"license": "MIT",
+	"license": "Apache-2.0",
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
 		"check": "tsc --noEmit",
