@@ -5,9 +5,9 @@ name: integration-smoke
 
 # End-to-end check that nvext.agent_context fields emitted by this package
 # round-trip through Dynamo's actual frontend + mocker into the agent trace
-# sink. Always tests against ai-dynamo/dynamo @ main — this repo is a
-# compatibility layer for one upstream, so head-of-tree on every PR is the
-# correct coupling. A broken upstream legitimately blocks merges here.
+# sink. Installs the published ai-dynamo wheel (latest including prereleases),
+# not raw upstream main — this filters out broken-build commits naturally
+# while still tracking what users would actually install.
 
 on:
   pull_request:
@@ -16,13 +16,11 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      dynamo_ref:
-        description: "ai-dynamo/dynamo git ref (branch, tag, or SHA). Defaults to main."
+      dynamo_spec:
+        description: "pip spec for ai-dynamo (e.g. 'ai-dynamo==1.2.0' or 'git+https://github.com/ai-dynamo/dynamo@<sha>'). Defaults to latest --pre."
         required: false
-        default: "main"
+        default: ""
 
-# Cancel in-flight runs when a new commit lands on the same branch — saves
-# minutes of wasted CI time when iterating quickly on this file.
 concurrency:
   group: integration-smoke-${{ github.ref }}
   cancel-in-progress: true
@@ -33,18 +31,11 @@ env:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Resolve Dynamo ref
-        id: dynamo
-        run: |
-          ref="${{ inputs.dynamo_ref }}"
-          ref="${ref:-main}"
-          echo "ref=${ref}" >>"$GITHUB_OUTPUT"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -57,22 +48,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            dynamo/target
-          key: cargo-${{ runner.os }}-${{ steps.dynamo.outputs.ref }}
-          restore-keys: |
-            cargo-${{ runner.os }}-
-
       - name: Cache HuggingFace tokenizer
         uses: actions/cache@v4
         with:
@@ -82,32 +57,18 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Install system build deps
-        # protoc is required for the dynamo runtime's prost/tonic build scripts.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends protobuf-compiler
-
-      - name: Clone Dynamo @ ${{ steps.dynamo.outputs.ref }}
-        run: |
-          git clone --depth 1 --branch "${{ steps.dynamo.outputs.ref }}" \
-            https://github.com/ai-dynamo/dynamo.git dynamo \
-            || git clone https://github.com/ai-dynamo/dynamo.git dynamo
-          if [[ "${{ steps.dynamo.outputs.ref }}" != "main" ]]; then
-            (cd dynamo && git fetch --depth 1 origin "${{ steps.dynamo.outputs.ref }}" && git checkout FETCH_HEAD)
-          fi
-          (cd dynamo && git log -1 --oneline)
-
-      - name: Install Dynamo from source
-        # maturin develop requires an active virtualenv. Create one, activate
-        # it, then export it into $GITHUB_PATH so subsequent steps inherit the
-        # same python with dynamo importable.
+      - name: Install Dynamo
+        # Use the published wheel rather than building from source. --pre picks
+        # up prerelease versions when present so we still track newer-than-tag
+        # releases. Wheel install is ~30s vs ~5-10 min cargo build, and a
+        # published wheel implies upstream's own CI green-lit the build.
         run: |
           python -m venv "${GITHUB_WORKSPACE}/.dynamo-venv"
           source "${GITHUB_WORKSPACE}/.dynamo-venv/bin/activate"
-          python -m pip install --upgrade pip maturin
-          (cd dynamo/lib/bindings/python && maturin develop --release)
-          pip install -e ./dynamo
+          python -m pip install --upgrade pip
+          spec="${{ inputs.dynamo_spec }}"
+          spec="${spec:-ai-dynamo}"
+          pip install --pre "${spec}"
           python -c "import dynamo.frontend, dynamo.mocker; print('dynamo import ok')"
           echo "${GITHUB_WORKSPACE}/.dynamo-venv/bin" >>"$GITHUB_PATH"
           echo "VIRTUAL_ENV=${GITHUB_WORKSPACE}/.dynamo-venv" >>"$GITHUB_ENV"

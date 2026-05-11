@@ -488,14 +488,14 @@ pi -e ./src/index.ts --model dynamo/<model-id>
 
 ## Continuous integration
 
-`.github/workflows/integration-smoke.yml` runs an end-to-end check that `nvext.agent_context` fields emitted by this package round-trip through Dynamo's actual frontend + mocker into the agent trace JSONL. Every PR is tested against **`ai-dynamo/dynamo@main`** — this repo is a compatibility layer for one upstream, so head-of-tree on every PR is the correct coupling. A broken upstream legitimately blocks merges here.
+`.github/workflows/integration-smoke.yml` runs an end-to-end check that `nvext.agent_context` fields emitted by this package round-trip through Dynamo's actual frontend + mocker into the agent trace JSONL. Every PR installs the latest published `ai-dynamo` wheel (`pip install --pre ai-dynamo`) and runs the smoke test against it. Published wheels track NVIDIA-validated releases — this filters out broken-build commits on `main` while still picking up prereleases as they ship.
 
 The smoke test exercises two cases:
 
 1. Top-level `agent_context` (`session_type_id`, `session_id`, `trajectory_id`) round-trips into the trace record verbatim.
 2. With `PI_SUBAGENT_CHILD=1` + bookkeeping vars exported, `readDynamoConfig` rewrites `trajectory_id` / `parent_trajectory_id` and the rewritten values land in the trace.
 
-Mocker output text is intentionally garbage — the harness never asserts on response content, only on the trace envelope. Total job ~5-10 min cold, ~60-90s with cargo + HF caches warm. Manual `workflow_dispatch` accepts a `dynamo_ref` input for ad-hoc validation against a branch, tag, or SHA.
+Mocker output text is intentionally garbage — the harness never asserts on response content, only on the trace envelope. Total job ~2-3 min (~30s for the wheel install, ~1 min for npm + mocker spin-up). Manual `workflow_dispatch` accepts a `dynamo_spec` input for ad-hoc validation against a specific pip spec (e.g. `ai-dynamo==1.2.0` or `git+https://github.com/ai-dynamo/dynamo@<sha>` to test an unmerged branch from source).
 
 Run locally against an existing Dynamo install:
 
