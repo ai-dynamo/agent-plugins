@@ -28,6 +28,13 @@ export interface DynamoEnvironment {
 	DYN_AGENT_SESSION_ID?: string;
 	DYN_AGENT_TRAJECTORY_ID?: string;
 	DYN_AGENT_PARENT_TRAJECTORY_ID?: string;
+	// pi-subagents bookkeeping vars. Set by pi-subagents when it spawns a
+	// child pi process; read here only to bridge them into the dynamo agent
+	// context. See readDynamoConfig for the rewrite rule.
+	PI_SUBAGENT_CHILD?: string;
+	PI_SUBAGENT_RUN_ID?: string;
+	PI_SUBAGENT_CHILD_AGENT?: string;
+	PI_SUBAGENT_CHILD_INDEX?: string;
 }
 
 export interface DynamoProviderRuntimeConfig {
@@ -84,8 +91,31 @@ export function normalizeDynamoBaseUrl(rawBaseUrl: string | undefined): string {
 
 export function readDynamoConfig(env: DynamoEnvironment = process.env): DynamoProviderRuntimeConfig {
 	const sessionId = getEnvValue(env, "DYN_AGENT_SESSION_ID");
-	const trajectoryId = getEnvValue(env, "DYN_AGENT_TRAJECTORY_ID");
-	const parentTrajectoryId = getEnvValue(env, "DYN_AGENT_PARENT_TRAJECTORY_ID");
+	let trajectoryId = getEnvValue(env, "DYN_AGENT_TRAJECTORY_ID");
+	let parentTrajectoryId = getEnvValue(env, "DYN_AGENT_PARENT_TRAJECTORY_ID");
+
+	// pi-subagents bridge. pi-subagents spawns each child agent as a child
+	// node process with `{ ...process.env, ...subagentEnv }`, so the parent's
+	// DYN_AGENT_TRAJECTORY_ID arrives in the child's env unchanged — under
+	// the wrong name. When PI_SUBAGENT_CHILD=1, treat the inherited
+	// trajectory id as the parent's, and synthesize a deterministic child
+	// trajectory id from pi-subagents' (run_id, child_agent, child_index)
+	// triple. Skipped if the caller already set DYN_AGENT_PARENT_TRAJECTORY_ID
+	// explicitly so manual overrides win. See README "Subagent trajectory
+	// linking" for the data flow and a worked example.
+	if (
+		!parentTrajectoryId &&
+		getEnvValue(env, "PI_SUBAGENT_CHILD") === "1" &&
+		trajectoryId !== undefined
+	) {
+		const piRunId = getEnvValue(env, "PI_SUBAGENT_RUN_ID");
+		const piChildAgent = getEnvValue(env, "PI_SUBAGENT_CHILD_AGENT");
+		const piChildIndex = getEnvValue(env, "PI_SUBAGENT_CHILD_INDEX") ?? "0";
+		if (piRunId && piChildAgent) {
+			parentTrajectoryId = trajectoryId;
+			trajectoryId = `${piRunId}:${piChildAgent}:${piChildIndex}`;
+		}
+	}
 
 	return {
 		baseUrl: normalizeDynamoBaseUrl(getEnvValue(env, "DYNAMO_BASE_URL") ?? getEnvValue(env, "OPENAI_BASE_URL")),

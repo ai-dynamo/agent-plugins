@@ -67,6 +67,76 @@ describe("dynamo provider config", () => {
 	});
 });
 
+describe("pi-subagents trajectory bridge", () => {
+	it("rewrites trajectory id and parent id when running as a pi-subagents child", () => {
+		const config = readDynamoConfig({
+			DYNAMO_BASE_URL: "http://dynamo.test",
+			DYN_AGENT_SESSION_ID: "run-42",
+			DYN_AGENT_TRAJECTORY_ID: "run-42:orchestrator",
+			PI_SUBAGENT_CHILD: "1",
+			PI_SUBAGENT_RUN_ID: "run-42",
+			PI_SUBAGENT_CHILD_AGENT: "researcher",
+			PI_SUBAGENT_CHILD_INDEX: "2",
+		});
+		expect(config.trajectoryId).toBe("run-42:researcher:2");
+		expect(config.parentTrajectoryId).toBe("run-42:orchestrator");
+	});
+
+	it("defaults child index to 0 when pi-subagents does not set it", () => {
+		const config = readDynamoConfig({
+			DYN_AGENT_TRAJECTORY_ID: "parent",
+			PI_SUBAGENT_CHILD: "1",
+			PI_SUBAGENT_RUN_ID: "r",
+			PI_SUBAGENT_CHILD_AGENT: "child",
+		});
+		expect(config.trajectoryId).toBe("r:child:0");
+		expect(config.parentTrajectoryId).toBe("parent");
+	});
+
+	it("respects an explicit DYN_AGENT_PARENT_TRAJECTORY_ID over the bridge", () => {
+		const config = readDynamoConfig({
+			DYN_AGENT_TRAJECTORY_ID: "explicit-traj",
+			DYN_AGENT_PARENT_TRAJECTORY_ID: "explicit-parent",
+			PI_SUBAGENT_CHILD: "1",
+			PI_SUBAGENT_RUN_ID: "run",
+			PI_SUBAGENT_CHILD_AGENT: "agent",
+		});
+		expect(config.trajectoryId).toBe("explicit-traj");
+		expect(config.parentTrajectoryId).toBe("explicit-parent");
+	});
+
+	it("does nothing when PI_SUBAGENT_CHILD is unset", () => {
+		const config = readDynamoConfig({
+			DYN_AGENT_TRAJECTORY_ID: "top-level",
+			PI_SUBAGENT_RUN_ID: "run",
+			PI_SUBAGENT_CHILD_AGENT: "agent",
+		});
+		expect(config.trajectoryId).toBe("top-level");
+		expect(config.parentTrajectoryId).toBeUndefined();
+	});
+
+	it("does nothing when the inherited DYN_AGENT_TRAJECTORY_ID is missing", () => {
+		const config = readDynamoConfig({
+			PI_SUBAGENT_CHILD: "1",
+			PI_SUBAGENT_RUN_ID: "run",
+			PI_SUBAGENT_CHILD_AGENT: "agent",
+		});
+		expect(config.trajectoryId).toBeUndefined();
+		expect(config.parentTrajectoryId).toBeUndefined();
+	});
+
+	it("does nothing when pi-subagents bookkeeping vars are partial", () => {
+		const config = readDynamoConfig({
+			DYN_AGENT_TRAJECTORY_ID: "top-level",
+			PI_SUBAGENT_CHILD: "1",
+			PI_SUBAGENT_RUN_ID: "run",
+			// PI_SUBAGENT_CHILD_AGENT missing — bridge should not fire.
+		});
+		expect(config.trajectoryId).toBe("top-level");
+		expect(config.parentTrajectoryId).toBeUndefined();
+	});
+});
+
 describe("agent context injection", () => {
 	it("uses the Pi session ID as the default trajectory ID", () => {
 		expect(buildDynamoAgentContext(config, { sessionId: "pi-session" })).toEqual({
