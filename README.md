@@ -412,31 +412,29 @@ That's it. When pi-subagents spawns a child, the bridge fires automatically — 
 
 ### Prerequisites for the bridge to fire
 
-The bridge runs inside the child Pi process. For child trace records to actually reach Dynamo, two things have to be true. Both can silently break the chain in non-interactive `-p` flows, so check them before debugging the bridge itself.
+Two things have to be true for child trace records to reach Dynamo. If either is wrong, the orchestrator silently falls back to in-process work and the trace looks like 100% orchestrator records — easy to mistake for a bridge bug.
 
-1. **`pi` must be on `PATH`.** pi-subagents spawns the child with `spawn("pi", ...)` (see `pi-spawn.ts`). If your Pi install lives under `node_modules/.bin`, export that directory on `PATH` before launching the orchestrator. Otherwise every subagent dispatch fails immediately — pi-subagents' `~/.pi/agent/run-history.jsonl` records `status: error, exit: 1` after 0–7s — the orchestrator silently falls back to doing the work itself, and the trace looks like 100% orchestrator records.
+**1. `pi` must be on `PATH`.** pi-subagents spawns each child by invoking `pi`, so the binary needs to be resolvable. If you installed Pi locally, put `node_modules/.bin` on `PATH` before launching the orchestrator:
 
-   ```bash
-   export PATH=/path/to/node_modules/.bin:$PATH
-   pi --model dynamo/<model-id> -p "..."
-   ```
+```bash
+export PATH=/path/to/node_modules/.bin:$PATH
+pi --model dynamo/<model-id> -p "..."
+```
 
-2. **Children must resolve to the `dynamo` provider.** pi-subagents does not thread the parent's `--model` to child Pi processes today (`subagent-executor.ts` only forwards `params.model ?? agentConfig.model`). With no `--model` on the child command line, Pi falls through `findInitialModel` to its own default — which can land on any other registered provider (e.g. `huggingface`). The bridge will still rewrite the trajectory id, but the child's LLM request never reaches Dynamo, so no child trace record is ever written.
+If this is wrong, every subagent dispatch exits 1 immediately. Confirm via `~/.pi/agent/run-history.jsonl`.
 
-   The simplest fix is to make the parent's model the saved default so children inherit it through Pi's settings:
+**2. Children must use the `dynamo` provider.** pi-subagents does not currently thread the parent's `--model` down to child Pi processes — children pick whatever Pi's default model resolution lands on, which usually isn't Dynamo. The bridge still rewrites the trajectory id, but the LLM call never reaches Dynamo, so no child record is written.
 
-   ```bash
-   python3 -c "
-   import json, pathlib
-   p = pathlib.Path.home() / '.pi/agent/settings.json'
-   d = json.loads(p.read_text())
-   d['defaultProvider'] = 'dynamo'
-   d['defaultModel'] = '<model-id>'   # e.g. zai-org/GLM-4.7-Flash
-   p.write_text(json.dumps(d, indent=2) + chr(10))
-   "
-   ```
+Make Dynamo the saved default in `~/.pi/agent/settings.json`:
 
-   The on-disk key is `defaultModel`, not `defaultModelId` (the latter is the SDK option name in pi's `sdk.js`). Alternatively, pin `model: dynamo/<model-id>` in the frontmatter of each pi-subagents agent `.md` you intend to use.
+```json
+{
+  "defaultProvider": "dynamo",
+  "defaultModel": "zai-org/GLM-4.7-Flash"
+}
+```
+
+The settings key is `defaultModel` (not `defaultModelId`). Alternatively, pin `model: dynamo/<model-id>` in the frontmatter of each pi-subagents agent's `.md`.
 
 ### Behavior summary
 
