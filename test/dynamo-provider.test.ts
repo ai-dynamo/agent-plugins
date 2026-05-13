@@ -4,8 +4,10 @@
 import { createAssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
+	applySubagentBridge,
 	buildDynamoAgentContext,
 	buildDynamoHeaders,
+	computeSubagentTrajectoryRewrite,
 	createDynamoStreamSimple,
 	DEFAULT_DYNAMO_BASE_URL,
 	DEFAULT_DYNAMO_MODEL_ID,
@@ -68,72 +70,78 @@ describe("dynamo provider config", () => {
 });
 
 describe("pi-subagents trajectory bridge", () => {
-	it("rewrites trajectory id and parent id when running as a pi-subagents child", () => {
-		const config = readDynamoConfig({
-			DYNAMO_BASE_URL: "http://dynamo.test",
-			DYN_AGENT_SESSION_ID: "run-42",
-			DYN_AGENT_TRAJECTORY_ID: "run-42:orchestrator",
-			PI_SUBAGENT_CHILD: "1",
-			PI_SUBAGENT_RUN_ID: "run-42",
-			PI_SUBAGENT_CHILD_AGENT: "researcher",
-			PI_SUBAGENT_CHILD_INDEX: "2",
+	const childEnv = {
+		DYN_AGENT_TRAJECTORY_ID: "parent-traj",
+		PI_SUBAGENT_CHILD: "1",
+		PI_SUBAGENT_RUN_ID: "run-1",
+		PI_SUBAGENT_CHILD_AGENT: "researcher",
+		PI_SUBAGENT_CHILD_INDEX: "2",
+	} as const;
+
+	it("reinterprets inherited DYN_AGENT_TRAJECTORY_ID as parent when in a subagent child", () => {
+		expect(computeSubagentTrajectoryRewrite(childEnv)).toEqual({
+			parentTrajectoryId: "parent-traj",
+			trajectoryId: "run-1:researcher:2",
 		});
-		expect(config.trajectoryId).toBe("run-42:researcher:2");
-		expect(config.parentTrajectoryId).toBe("run-42:orchestrator");
 	});
 
-	it("defaults child index to 0 when pi-subagents does not set it", () => {
-		const config = readDynamoConfig({
-			DYN_AGENT_TRAJECTORY_ID: "parent",
-			PI_SUBAGENT_CHILD: "1",
-			PI_SUBAGENT_RUN_ID: "r",
-			PI_SUBAGENT_CHILD_AGENT: "child",
+	it("defaults PI_SUBAGENT_CHILD_INDEX to 0 when absent", () => {
+		const { PI_SUBAGENT_CHILD_INDEX: _omit, ...envWithoutIndex } = childEnv;
+		expect(computeSubagentTrajectoryRewrite(envWithoutIndex)).toEqual({
+			parentTrajectoryId: "parent-traj",
+			trajectoryId: "run-1:researcher:0",
 		});
-		expect(config.trajectoryId).toBe("r:child:0");
-		expect(config.parentTrajectoryId).toBe("parent");
 	});
 
-	it("respects an explicit DYN_AGENT_PARENT_TRAJECTORY_ID over the bridge", () => {
-		const config = readDynamoConfig({
-			DYN_AGENT_TRAJECTORY_ID: "explicit-traj",
-			DYN_AGENT_PARENT_TRAJECTORY_ID: "explicit-parent",
-			PI_SUBAGENT_CHILD: "1",
-			PI_SUBAGENT_RUN_ID: "run",
-			PI_SUBAGENT_CHILD_AGENT: "agent",
-		});
-		expect(config.trajectoryId).toBe("explicit-traj");
-		expect(config.parentTrajectoryId).toBe("explicit-parent");
+	it("skips the bridge when PI_SUBAGENT_CHILD is not 1", () => {
+		expect(computeSubagentTrajectoryRewrite({ ...childEnv, PI_SUBAGENT_CHILD: undefined })).toBeNull();
 	});
 
-	it("does nothing when PI_SUBAGENT_CHILD is unset", () => {
-		const config = readDynamoConfig({
-			DYN_AGENT_TRAJECTORY_ID: "top-level",
-			PI_SUBAGENT_RUN_ID: "run",
-			PI_SUBAGENT_CHILD_AGENT: "agent",
-		});
-		expect(config.trajectoryId).toBe("top-level");
-		expect(config.parentTrajectoryId).toBeUndefined();
+	it("does NOT override an explicit DYN_AGENT_PARENT_TRAJECTORY_ID (manual wins)", () => {
+		expect(
+			computeSubagentTrajectoryRewrite({ ...childEnv, DYN_AGENT_PARENT_TRAJECTORY_ID: "manual-parent" }),
+		).toBeNull();
 	});
 
-	it("does nothing when the inherited DYN_AGENT_TRAJECTORY_ID is missing", () => {
-		const config = readDynamoConfig({
-			PI_SUBAGENT_CHILD: "1",
-			PI_SUBAGENT_RUN_ID: "run",
-			PI_SUBAGENT_CHILD_AGENT: "agent",
-		});
-		expect(config.trajectoryId).toBeUndefined();
-		expect(config.parentTrajectoryId).toBeUndefined();
+	it("skips when inherited DYN_AGENT_TRAJECTORY_ID is absent", () => {
+		expect(computeSubagentTrajectoryRewrite({ ...childEnv, DYN_AGENT_TRAJECTORY_ID: undefined })).toBeNull();
 	});
 
-	it("does nothing when pi-subagents bookkeeping vars are partial", () => {
-		const config = readDynamoConfig({
-			DYN_AGENT_TRAJECTORY_ID: "top-level",
-			PI_SUBAGENT_CHILD: "1",
-			PI_SUBAGENT_RUN_ID: "run",
-			// PI_SUBAGENT_CHILD_AGENT missing — bridge should not fire.
+	it("skips when PI_SUBAGENT_RUN_ID or PI_SUBAGENT_CHILD_AGENT is missing", () => {
+		expect(computeSubagentTrajectoryRewrite({ ...childEnv, PI_SUBAGENT_RUN_ID: undefined })).toBeNull();
+		expect(computeSubagentTrajectoryRewrite({ ...childEnv, PI_SUBAGENT_CHILD_AGENT: undefined })).toBeNull();
+	});
+
+	it("readDynamoConfig surfaces the synthesized ids", () => {
+		const cfg = readDynamoConfig(childEnv);
+		expect(cfg.trajectoryId).toBe("run-1:researcher:2");
+		expect(cfg.parentTrajectoryId).toBe("parent-traj");
+	});
+
+	it("applySubagentBridge mutates process.env so nested spawns chain correctly", () => {
+		const env: NodeJS.ProcessEnv = { ...childEnv };
+		expect(applySubagentBridge(env)).toBe(true);
+		expect(env.DYN_AGENT_TRAJECTORY_ID).toBe("run-1:researcher:2");
+		expect(env.DYN_AGENT_PARENT_TRAJECTORY_ID).toBe("parent-traj");
+
+		// Idempotent: a second call sees the now-set parent and short-circuits.
+		expect(applySubagentBridge(env)).toBe(false);
+		expect(env.DYN_AGENT_TRAJECTORY_ID).toBe("run-1:researcher:2");
+
+		// Chaining: when this grandchild spawns its own subagent, pi-subagents
+		// passes { ...process.env, ...subagentEnv }. The grandchild then sees
+		// its own synthesized id as inherited DYN_AGENT_TRAJECTORY_ID, so the
+		// next rewrite treats THIS generation as the parent.
+		const grandchildEnv = {
+			...env,
+			DYN_AGENT_PARENT_TRAJECTORY_ID: undefined,
+			PI_SUBAGENT_CHILD_AGENT: "subworker",
+			PI_SUBAGENT_CHILD_INDEX: "0",
+		};
+		expect(computeSubagentTrajectoryRewrite(grandchildEnv)).toEqual({
+			parentTrajectoryId: "run-1:researcher:2",
+			trajectoryId: "run-1:subworker:0",
 		});
-		expect(config.trajectoryId).toBe("top-level");
-		expect(config.parentTrajectoryId).toBeUndefined();
 	});
 });
 

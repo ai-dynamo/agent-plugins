@@ -3,6 +3,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
+	applySubagentBridge,
 	createDynamoModels,
 	createDynamoProviderConfig,
 	DEFAULT_DYNAMO_MODEL_ID,
@@ -13,6 +14,12 @@ import {
 import { registerDynamoToolEventRelay } from "./tool-relay.js";
 
 export default async function dynamoProviderExtension(pi: ExtensionAPI): Promise<void> {
+	// Mutate process.env BEFORE readDynamoConfig so the rewrite also reaches
+	// any pi-subagents this process later spawns. readDynamoConfig itself
+	// recomputes the rewrite independently, so omitting this call still
+	// yields a correct config for THIS process — but nested subagent chains
+	// collapse to the root parent without the env mutation.
+	applySubagentBridge();
 	const config = readDynamoConfig();
 	const discoveredModels = await discoverDynamoModels(config);
 	const models =

@@ -28,9 +28,11 @@ export interface DynamoEnvironment {
 	DYN_AGENT_SESSION_ID?: string;
 	DYN_AGENT_TRAJECTORY_ID?: string;
 	DYN_AGENT_PARENT_TRAJECTORY_ID?: string;
-	// pi-subagents bookkeeping vars. Set by pi-subagents when it spawns a
-	// child pi process; read here only to bridge them into the dynamo agent
-	// context. See readDynamoConfig for the rewrite rule.
+	// pi-subagents bookkeeping. pi-subagents spawns each child agent as a
+	// node child_process with `{ ...process.env, ...subagentEnv }`, so the
+	// parent's DYN_AGENT_TRAJECTORY_ID arrives in the child unchanged —
+	// under the wrong name. The bridge below reinterprets it. See
+	// `applySubagentBridge` and the README "Subagent trajectory linking".
 	PI_SUBAGENT_CHILD?: string;
 	PI_SUBAGENT_RUN_ID?: string;
 	PI_SUBAGENT_CHILD_AGENT?: string;
@@ -89,33 +91,68 @@ export function normalizeDynamoBaseUrl(rawBaseUrl: string | undefined): string {
 	}
 }
 
-export function readDynamoConfig(env: DynamoEnvironment = process.env): DynamoProviderRuntimeConfig {
-	const sessionId = getEnvValue(env, "DYN_AGENT_SESSION_ID");
-	let trajectoryId = getEnvValue(env, "DYN_AGENT_TRAJECTORY_ID");
-	let parentTrajectoryId = getEnvValue(env, "DYN_AGENT_PARENT_TRAJECTORY_ID");
+/**
+ * Compute the trajectory rewrite that pi-subagents inheritance implies, without
+ * mutating any caller-visible state. Pure: takes the raw env, returns either
+ * `null` (no rewrite applies) or `{ trajectoryId, parentTrajectoryId }` where
+ * `trajectoryId` is the synthesized child id and `parentTrajectoryId` is the
+ * inherited parent id.
+ *
+ * Rewrite fires only when ALL of these hold:
+ *   - `PI_SUBAGENT_CHILD === "1"` (this process was spawned by pi-subagents)
+ *   - inherited `DYN_AGENT_TRAJECTORY_ID` is set (the parent's id we want to
+ *     reinterpret)
+ *   - `DYN_AGENT_PARENT_TRAJECTORY_ID` is NOT already set (manual override wins)
+ *   - both `PI_SUBAGENT_RUN_ID` and `PI_SUBAGENT_CHILD_AGENT` are set (without
+ *     them we cannot synthesize a deterministic child id)
+ *
+ * `PI_SUBAGENT_CHILD_INDEX` defaults to `"0"` when absent.
+ */
+export function computeSubagentTrajectoryRewrite(
+	env: DynamoEnvironment,
+): { trajectoryId: string; parentTrajectoryId: string } | null {
+	if (getEnvValue(env, "PI_SUBAGENT_CHILD") !== "1") return null;
+	if (getEnvValue(env, "DYN_AGENT_PARENT_TRAJECTORY_ID")) return null;
+	const inherited = getEnvValue(env, "DYN_AGENT_TRAJECTORY_ID");
+	if (!inherited) return null;
+	const runId = getEnvValue(env, "PI_SUBAGENT_RUN_ID");
+	const childAgent = getEnvValue(env, "PI_SUBAGENT_CHILD_AGENT");
+	if (!runId || !childAgent) return null;
+	const childIndex = getEnvValue(env, "PI_SUBAGENT_CHILD_INDEX") ?? "0";
+	return {
+		parentTrajectoryId: inherited,
+		trajectoryId: `${runId}:${childAgent}:${childIndex}`,
+	};
+}
 
-	// pi-subagents bridge. pi-subagents spawns each child agent as a child
-	// node process with `{ ...process.env, ...subagentEnv }`, so the parent's
-	// DYN_AGENT_TRAJECTORY_ID arrives in the child's env unchanged — under
-	// the wrong name. When PI_SUBAGENT_CHILD=1, treat the inherited
-	// trajectory id as the parent's, and synthesize a deterministic child
-	// trajectory id from pi-subagents' (run_id, child_agent, child_index)
-	// triple. Skipped if the caller already set DYN_AGENT_PARENT_TRAJECTORY_ID
-	// explicitly so manual overrides win. See README "Subagent trajectory
-	// linking" for the data flow and a worked example.
-	if (
-		!parentTrajectoryId &&
-		getEnvValue(env, "PI_SUBAGENT_CHILD") === "1" &&
-		trajectoryId !== undefined
-	) {
-		const piRunId = getEnvValue(env, "PI_SUBAGENT_RUN_ID");
-		const piChildAgent = getEnvValue(env, "PI_SUBAGENT_CHILD_AGENT");
-		const piChildIndex = getEnvValue(env, "PI_SUBAGENT_CHILD_INDEX") ?? "0";
-		if (piRunId && piChildAgent) {
-			parentTrajectoryId = trajectoryId;
-			trajectoryId = `${piRunId}:${piChildAgent}:${piChildIndex}`;
-		}
-	}
+/**
+ * Apply the pi-subagents trajectory rewrite to `process.env` so subsequent
+ * pi-subagents spawns inherit this generation's synthesized trajectory_id as
+ * their parent. Without this, nested subagent chains collapse — every
+ * generation would observe the original grandparent as its parent and the
+ * middle generations would be invisible in the dynamo trace.
+ *
+ * Idempotent: a second call has no effect because the rewrite condition
+ * requires `DYN_AGENT_PARENT_TRAJECTORY_ID` to be absent, which it isn't after
+ * the first call. Safe to invoke from extension init.
+ *
+ * Mutates the supplied env object in place (defaults to `process.env`); also
+ * returns whether a rewrite was applied so callers can log/test.
+ */
+export function applySubagentBridge(env: NodeJS.ProcessEnv = process.env): boolean {
+	const rewrite = computeSubagentTrajectoryRewrite(env);
+	if (!rewrite) return false;
+	env.DYN_AGENT_PARENT_TRAJECTORY_ID = rewrite.parentTrajectoryId;
+	env.DYN_AGENT_TRAJECTORY_ID = rewrite.trajectoryId;
+	return true;
+}
+
+export function readDynamoConfig(env: DynamoEnvironment = process.env): DynamoProviderRuntimeConfig {
+	const rewrite = computeSubagentTrajectoryRewrite(env);
+	const sessionId = getEnvValue(env, "DYN_AGENT_SESSION_ID");
+	const trajectoryId = rewrite?.trajectoryId ?? getEnvValue(env, "DYN_AGENT_TRAJECTORY_ID");
+	const parentTrajectoryId =
+		rewrite?.parentTrajectoryId ?? getEnvValue(env, "DYN_AGENT_PARENT_TRAJECTORY_ID");
 
 	return {
 		baseUrl: normalizeDynamoBaseUrl(getEnvValue(env, "DYNAMO_BASE_URL") ?? getEnvValue(env, "OPENAI_BASE_URL")),

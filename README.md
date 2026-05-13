@@ -239,6 +239,38 @@ pi --model dynamo/zai-org/GLM-4.7-Flash \
   -p "Run the tests in this folder, fix the smallest bug, and rerun the tests."
 ```
 
+## Subagent Trajectory Linking
+
+When [`nicobailon/pi-subagents`](https://github.com/nicobailon/pi-subagents) (or a compatible spawner) launches a child Pi process, the child inherits the parent's `process.env` — including `DYN_AGENT_TRAJECTORY_ID`. Without intervention, parent and child emit identical `trajectory_id` values to Dynamo and the parent/child distinction collapses in the trace.
+
+This package detects that situation and rewrites the agent context. When `PI_SUBAGENT_CHILD=1` is set on a child process AND `DYN_AGENT_PARENT_TRAJECTORY_ID` is not manually set:
+
+- The inherited `DYN_AGENT_TRAJECTORY_ID` is reinterpreted as the **parent's** trajectory id.
+- A fresh child `trajectory_id` is synthesized as `${PI_SUBAGENT_RUN_ID}:${PI_SUBAGENT_CHILD_AGENT}:${PI_SUBAGENT_CHILD_INDEX}` (the index defaults to `0`).
+- `process.env` is mutated so that any subagents this child itself spawns inherit the correct parent → child chain. Nested chains stay attributable instead of collapsing back to the root.
+
+Manual override always wins: setting `DYN_AGENT_PARENT_TRAJECTORY_ID` explicitly disables the bridge. The pi-subagents-side env requirements (`PI_SUBAGENT_RUN_ID` and `PI_SUBAGENT_CHILD_AGENT` populated) match what `nicobailon/pi-subagents` already sets via `buildPiArgs` — no upstream change is needed.
+
+Worked example with a parent that spawns `researcher[2]`:
+
+```text
+parent process:                       trajectory_id=root-traj
+                                      parent_trajectory_id=(unset)
+
+pi-subagents spawns researcher child with env:
+  DYN_AGENT_TRAJECTORY_ID=root-traj   (inherited verbatim)
+  PI_SUBAGENT_CHILD=1
+  PI_SUBAGENT_RUN_ID=run-1
+  PI_SUBAGENT_CHILD_AGENT=researcher
+  PI_SUBAGENT_CHILD_INDEX=2
+
+child process after applySubagentBridge:
+                                      trajectory_id=run-1:researcher:2
+                                      parent_trajectory_id=root-traj
+```
+
+If you do not use pi-subagents (or any tool that sets `PI_SUBAGENT_CHILD=1`), this code path is inert — `readDynamoConfig` falls through to the normal env reads.
+
 ## Model Names
 
 Use Pi model names in this form:
@@ -279,7 +311,11 @@ That fallback is useful for smoke tests against minimal OpenAI-compatible endpoi
 | `DYN_AGENT_SESSION_TYPE_ID` | `pi_coding_agent` | Stable session type used by Dynamo traces/profilers. |
 | `DYN_AGENT_SESSION_ID` | unset | Session/run id. If unset for tool events, the Pi session id is used. |
 | `DYN_AGENT_TRAJECTORY_ID` | unset | Trajectory id override. If unset, Pi's session id is used per request. |
-| `DYN_AGENT_PARENT_TRAJECTORY_ID` | unset | Optional parent trajectory id for nested/subagent workflows. |
+| `DYN_AGENT_PARENT_TRAJECTORY_ID` | unset | Optional parent trajectory id for nested/subagent workflows. Manual value overrides the subagent bridge. |
+| `PI_SUBAGENT_CHILD` | unset | Read, not set. When `1`, the trajectory bridge rewrites `trajectory_id` / `parent_trajectory_id` from pi-subagents bookkeeping. See [Subagent Trajectory Linking](#subagent-trajectory-linking). |
+| `PI_SUBAGENT_RUN_ID` | unset | Read, not set. pi-subagents run identifier; used by the trajectory bridge. |
+| `PI_SUBAGENT_CHILD_AGENT` | unset | Read, not set. pi-subagents child-agent name; used by the trajectory bridge. |
+| `PI_SUBAGENT_CHILD_INDEX` | unset | Read, not set. pi-subagents sibling index; defaults to `0`. |
 | `DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT` | unset | Dynamo-bound ZMQ PULL endpoint Pi connects to for tool events. |
 | `DYN_AGENT_TRACE_TOOL_ZMQ_ENDPOINT` | unset | Alias for the tool-event endpoint. |
 | `DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` | unset | Alias for the tool-event endpoint. |
@@ -287,10 +323,6 @@ That fallback is useful for smoke tests against minimal OpenAI-compatible endpoi
 | `DYN_AGENT_TRACE_TOOL_ZMQ_TOPIC` | unset | Alias for the tool-event topic. |
 | `DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_TOPIC` | unset | Alias for the tool-event topic. |
 | `DYN_AGENT_TOOL_EVENTS_QUEUE_CAPACITY` | `100000` | Local publish queue capacity before tool events are dropped. |
-| `PI_SUBAGENT_CHILD` | unset | Read, not set: when `1`, the trajectory bridge rewrites `trajectory_id` / `parent_trajectory_id` from pi-subagents' bookkeeping vars. See [Subagent trajectory linking](#subagent-trajectory-linking). |
-| `PI_SUBAGENT_RUN_ID` | unset | Read, not set: pi-subagents run identifier. Used by the trajectory bridge. |
-| `PI_SUBAGENT_CHILD_AGENT` | unset | Read, not set: pi-subagents child-agent name. Used by the trajectory bridge. |
-| `PI_SUBAGENT_CHILD_INDEX` | unset | Read, not set: pi-subagents sibling index. Used by the trajectory bridge; defaults to `0`. |
 
 </details>
 
@@ -374,75 +406,6 @@ Terminal `tool_end` and `tool_error` records include enough timing information t
 
 </details>
 
-## Subagent trajectory linking
-
-When Pi runs with [pi-subagents](https://github.com/nicobailon/pi-subagents) and dispatches a child agent, the child agent runs as a separate Node process. Pi-subagents already passes its parent's `process.env` through to the child, which means the parent's `DYN_AGENT_TRAJECTORY_ID` arrives in the child's environment unchanged — under the wrong name. Without intervention, both the parent and the child would emit identical `trajectory_id` values to Dynamo, collapsing the parent/child distinction in the trace.
-
-This package detects that pattern and rewrites the trajectory ids automatically. When `PI_SUBAGENT_CHILD=1` is present in the child's environment (set by pi-subagents on every spawn), the inherited `DYN_AGENT_TRAJECTORY_ID` is reinterpreted as the parent's id, and the child's id is synthesized deterministically from `PI_SUBAGENT_RUN_ID:PI_SUBAGENT_CHILD_AGENT:PI_SUBAGENT_CHILD_INDEX`.
-
-```mermaid
-sequenceDiagram
-    participant Orch as Pi orchestrator (parent)
-    participant Spawn as pi-subagents spawn
-    participant Child as Pi child agent
-    participant Dynamo as Dynamo trace
-
-    Note over Orch: DYN_AGENT_TRAJECTORY_ID=run-42:orchestrator
-    Orch->>Dynamo: request_end<br/>trajectory_id=run-42:orchestrator
-    Orch->>Spawn: dispatch researcher subagent
-    Spawn->>Child: spawn(pi, ...) with<br/>process.env + PI_SUBAGENT_*
-    Note over Child: env arrives as:<br/>DYN_AGENT_TRAJECTORY_ID=run-42:orchestrator (inherited)<br/>PI_SUBAGENT_CHILD=1<br/>PI_SUBAGENT_RUN_ID=run-42<br/>PI_SUBAGENT_CHILD_AGENT=researcher<br/>PI_SUBAGENT_CHILD_INDEX=0
-    Note over Child: bridge rewrites to:<br/>trajectory_id=run-42:researcher:0<br/>parent_trajectory_id=run-42:orchestrator
-    Child->>Dynamo: request_end<br/>trajectory_id=run-42:researcher:0<br/>parent_trajectory_id=run-42:orchestrator
-```
-
-### What you need to do
-
-For top-level Pi runs that you expect to spawn subagents, give the orchestrator a stable trajectory id so subagents can reference it:
-
-```bash
-export DYN_AGENT_SESSION_TYPE_ID=pi_coding_agent
-export DYN_AGENT_SESSION_ID="run-$(date +%s)"
-export DYN_AGENT_TRAJECTORY_ID="${DYN_AGENT_SESSION_ID}:orchestrator"
-
-pi --model dynamo/<model-id> -p "..."
-```
-
-One caveat: pi-subagents does not currently thread the parent's `--model` down to child Pi processes, so children fall through to Pi's default model resolution, which usually isn't Dynamo. The bridge still rewrites the trajectory id, but the LLM call never reaches Dynamo and no child trace record is written. Make Dynamo the saved default in `~/.pi/agent/settings.json` so children pick it up:
-
-```json
-{
-  "defaultProvider": "dynamo",
-  "defaultModel": "zai-org/GLM-4.7-Flash"
-}
-```
-
-(The settings key is `defaultModel`, not `defaultModelId`. Alternatively, pin `model: dynamo/<model-id>` in the frontmatter of each pi-subagents agent's `.md`.)
-
-When pi-subagents spawns a child, the bridge fires automatically — no extra plumbing on the pi-subagents side, and no modifications to your subagent prompts. Trace records emitted by the child will carry `parent_trajectory_id` set to the orchestrator's id, and offline tooling can reconstruct the agent tree from the `(session_id, trajectory_id, parent_trajectory_id)` triple alone.
-
-### Behavior summary
-
-| Situation | trajectory_id emitted | parent_trajectory_id emitted |
-| --- | --- | --- |
-| Top-level Pi (no pi-subagents) | from `DYN_AGENT_TRAJECTORY_ID` (or Pi session id) | from `DYN_AGENT_PARENT_TRAJECTORY_ID` (usually unset) |
-| pi-subagents child, default | `<RUN_ID>:<CHILD_AGENT>:<CHILD_INDEX>` | parent's `DYN_AGENT_TRAJECTORY_ID` (inherited) |
-| pi-subagents child, with explicit `DYN_AGENT_PARENT_TRAJECTORY_ID` set | unchanged from explicit value | unchanged from explicit value |
-| pi-subagents child with incomplete bookkeeping vars | falls back to top-level behavior | falls back to top-level behavior |
-
-The bridge only fires when all three of `PI_SUBAGENT_CHILD=1`, `PI_SUBAGENT_RUN_ID`, and `PI_SUBAGENT_CHILD_AGENT` are present and `DYN_AGENT_PARENT_TRAJECTORY_ID` is not already set; manual overrides always win.
-
-### Verifying the link
-
-After a run with subagents, decompress the Dynamo trace and group by trajectory id:
-
-```bash
-zcat /tmp/dynamo-agent-trace.*.jsonl.gz \
-  | jq -c '.event | select(.event_type=="request_end") | {trajectory_id: .agent_context.trajectory_id, parent_trajectory_id: .agent_context.parent_trajectory_id, request_id: .request.request_id}'
-```
-
-You should see `parent_trajectory_id` populated on every child trajectory's records, with the orchestrator's records having it unset (the orchestrator is its own root unless an outer wrapper provides one).
-
 ## Generate Perfetto
 
 After a run, convert the Dynamo JSONL trace:
@@ -484,23 +447,6 @@ Run from source without installing:
 ```bash
 export DYNAMO_BASE_URL=http://127.0.0.1:8000/v1
 pi -e ./src/index.ts --model dynamo/<model-id>
-```
-
-## Continuous integration
-
-`.github/workflows/integration-smoke.yml` runs an end-to-end check that `nvext.agent_context` fields emitted by this package round-trip through Dynamo's actual frontend + mocker into the agent trace JSONL. Builds Dynamo from `ai-dynamo/dynamo@main` on every run — published wheels lag behind the agent trace sink surface this package depends on, so we need source builds. Cargo cache keeps warm runs in the ~60-90s range; cold runs ~10 min.
-
-The smoke test exercises two cases:
-
-1. Top-level `agent_context` (`session_type_id`, `session_id`, `trajectory_id`) round-trips into the trace record verbatim.
-2. With `PI_SUBAGENT_CHILD=1` + bookkeeping vars exported, `readDynamoConfig` rewrites `trajectory_id` / `parent_trajectory_id` and the rewritten values land in the trace.
-
-Mocker output text is intentionally garbage — the harness never asserts on response content, only on the trace envelope. Manual `workflow_dispatch` accepts a `dynamo_ref` input for ad-hoc validation against a specific branch, tag, or SHA.
-
-Run locally against an existing Dynamo install:
-
-```bash
-./scripts/integration-smoke.sh
 ```
 
 ## Troubleshooting
