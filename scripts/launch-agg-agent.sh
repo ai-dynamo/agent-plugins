@@ -35,7 +35,6 @@ Options:
   --tp N                      Tensor parallelism for the worker. Default: 1
   --http-port PORT            Dynamo HTTP port. Default: 18083
   --system-port PORT          Worker system metrics/control port. Default: 18084
-  --tool-events-endpoint END  ZMQ endpoint for Pi tool events. Default: tcp://127.0.0.1:20390
   -h, --help                  Show this help.
 
 Environment overrides:
@@ -46,7 +45,6 @@ Environment overrides:
   TP
   DYN_HTTP_PORT
   DYN_SYSTEM_PORT
-  DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT
   DYN_AGENT_TRACE_OUTPUT_PATH
 
 Examples:
@@ -90,7 +88,6 @@ GPUS="${CUDA_VISIBLE_DEVICES:-0}"
 TP="${TP:-1}"
 HTTP_PORT="${DYN_HTTP_PORT:-18083}"
 SYSTEM_PORT="${DYN_SYSTEM_PORT:-18084}"
-TOOL_EVENTS_ENDPOINT="${DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT:-tcp://127.0.0.1:20390}"
 SGLANG_ARGS=()
 
 while (($# > 0)); do
@@ -121,10 +118,6 @@ while (($# > 0)); do
             ;;
         --system-port)
             SYSTEM_PORT="$2"
-            shift 2
-            ;;
-        --tool-events-endpoint)
-            TOOL_EVENTS_ENDPOINT="$2"
             shift 2
             ;;
         --)
@@ -171,7 +164,7 @@ Pi environment for another shell:
   export DYNAMO_API_KEY=dummy
   export DYN_AGENT_WORKFLOW_TYPE_ID=pi_coding_agent
   export DYN_AGENT_WORKFLOW_ID=pi-demo-${RUN_ID}
-  export DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT=${TOOL_EVENTS_ENDPOINT}
+  export DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390
 
 Example Pi command:
 
@@ -226,10 +219,10 @@ export DYN_DISCOVERY_BACKEND=file
 export DYN_REQUEST_PLANE=tcp
 export DYN_EVENT_PLANE=zmq
 export DYN_FILE_KV="$FILE_KV"
+export DYN_AGENT_TRACE=1
 export DYN_AGENT_TRACE_SINKS="${DYN_AGENT_TRACE_SINKS:-jsonl}"
 export DYN_AGENT_TRACE_OUTPUT_PATH="$TRACE_PATH"
 export DYN_AGENT_TRACE_JSONL_FLUSH_INTERVAL_MS="${DYN_AGENT_TRACE_JSONL_FLUSH_INTERVAL_MS:-100}"
-export DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT="$TOOL_EVENTS_ENDPOINT"
 export DYN_LOG="${DYN_LOG:-info}"
 
 log "Run directory: $RUN_DIR"
@@ -242,7 +235,6 @@ log "Request plane: tcp"
 log "Event plane: zmq"
 log "HTTP: http://127.0.0.1:$HTTP_PORT/v1"
 log "Trace JSONL: $TRACE_PATH"
-log "Tool relay endpoint: $TOOL_EVENTS_ENDPOINT"
 
 log "Starting Dynamo frontend"
 python3 -m dynamo.frontend \
