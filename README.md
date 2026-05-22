@@ -199,9 +199,9 @@ export DYN_DISCOVERY_BACKEND=file
 export DYN_REQUEST_PLANE=tcp
 export DYN_EVENT_PLANE=zmq
 export DYN_FILE_KV=/tmp/dynamo-file-kv
+export DYN_AGENT_TRACE=1
 export DYN_AGENT_TRACE_SINKS=jsonl
 export DYN_AGENT_TRACE_OUTPUT_PATH=/tmp/dynamo-agent-trace.jsonl
-export DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390
 
 python3 -m dynamo.frontend \
   --discovery-backend file \
@@ -334,10 +334,10 @@ These are the Dynamo variables most commonly needed for Pi traces. Exact launch 
 | Variable | Example | Purpose |
 | --- | --- | --- |
 | `DYN_HTTP_PORT` | `18083` | Dynamo HTTP port for `/v1/models` and `/v1/chat/completions`. |
-| `DYN_AGENT_TRACE_SINKS` | `jsonl` | Enables Dynamo agent trace sinks. |
-| `DYN_AGENT_TRACE_OUTPUT_PATH` | `/tmp/dynamo-agent-trace.jsonl` | JSONL trace output path. |
+| `DYN_AGENT_TRACE` | `1` | Master switch. Enables tracing with `jsonl_gz` sinks at `/tmp/dynamo-agent-trace` and a tool-event ZMQ endpoint at `tcp://127.0.0.1:20390`. |
+| `DYN_AGENT_TRACE_SINKS` | `jsonl` | Override the default `jsonl_gz` (uncompressed is easier to tail/jq during interactive runs). |
+| `DYN_AGENT_TRACE_OUTPUT_PATH` | `/tmp/dynamo-agent-trace.jsonl` | Override the default `/tmp/dynamo-agent-trace`. |
 | `DYN_AGENT_TRACE_JSONL_FLUSH_INTERVAL_MS` | `100` | Optional flush interval for faster interactive validation. |
-| `DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` | `tcp://127.0.0.1:20390` | ZMQ PULL endpoint Dynamo binds for Pi tool events. |
 | `DYN_DISCOVERY_BACKEND` | `file` | File-backed local discovery; avoids etcd. |
 | `DYN_REQUEST_PLANE` | `tcp` | TCP request distribution from frontend to worker. |
 | `DYN_EVENT_PLANE` | `zmq` | ZMQ local event plane; avoids NATS. |
@@ -464,14 +464,13 @@ Pi says the model is unknown:
 
 LLM traces exist but tool spans are missing:
 
-- Set `DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` on Dynamo.
-- Set `DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT` to the same endpoint on Pi.
+- Confirm Dynamo is launched with `DYN_AGENT_TRACE=1` (binds the tool ZMQ endpoint at `tcp://127.0.0.1:20390` by default).
+- Set `DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390` on Pi (or override both sides to match).
 - Confirm the Pi run actually used tools.
 
 Tool spans exist but request spans do not:
 
-- Enable Dynamo tracing with `DYN_AGENT_TRACE_SINKS=jsonl`.
-- Set `DYN_AGENT_TRACE_OUTPUT_PATH`.
+- Confirm Dynamo is launched with `DYN_AGENT_TRACE=1`.
 - Confirm the request reached Dynamo's `/v1/chat/completions` endpoint.
 
 Authentication fails:

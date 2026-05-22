@@ -74,6 +74,7 @@ echo "smoke: building pi-dynamo-provider"
 
 # Trace sink config. flush interval kept short so the smoke test doesn't race
 # the writer when reading the JSONL between requests.
+export DYN_AGENT_TRACE=1
 export DYN_AGENT_TRACE_SINKS=jsonl
 export DYN_AGENT_TRACE_OUTPUT_PATH="${TRACE_PATH}"
 export DYN_AGENT_TRACE_JSONL_FLUSH_INTERVAL_MS=100
