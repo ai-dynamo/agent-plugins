@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dynamo-agent-proxy"
+version = "0.1.0"
+description = "Generic OpenAI and Anthropic compatible proxy that injects Dynamo nvext agent metadata."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "NVIDIA" }]
+keywords = ["dynamo", "openai", "anthropic", "proxy", "agent", "nvext"]
+dependencies = []
+
+[project.scripts]
+dynamo-agent-proxy = "dynamo_agent_proxy.proxy:main"
+
+[project.urls]
+Repository = "https://github.com/ai-dynamo/pi-dynamo-provider"
+
+[tool.setuptools.packages.find]
+where = ["python"]

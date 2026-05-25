@@ -94,7 +94,8 @@ describe("pi-subagents trajectory bridge", () => {
 	});
 
 	it("skips the bridge when PI_SUBAGENT_CHILD is not 1", () => {
-		expect(computeSubagentTrajectoryRewrite({ ...childEnv, PI_SUBAGENT_CHILD: undefined })).toBeNull();
+		const { PI_SUBAGENT_CHILD: _omit, ...envWithoutChildFlag } = childEnv;
+		expect(computeSubagentTrajectoryRewrite(envWithoutChildFlag)).toBeNull();
 	});
 
 	it("does NOT override an explicit DYN_AGENT_PARENT_TRAJECTORY_ID (manual wins)", () => {
@@ -104,12 +105,15 @@ describe("pi-subagents trajectory bridge", () => {
 	});
 
 	it("skips when inherited DYN_AGENT_TRAJECTORY_ID is absent", () => {
-		expect(computeSubagentTrajectoryRewrite({ ...childEnv, DYN_AGENT_TRAJECTORY_ID: undefined })).toBeNull();
+		const { DYN_AGENT_TRAJECTORY_ID: _omit, ...envWithoutTrajectory } = childEnv;
+		expect(computeSubagentTrajectoryRewrite(envWithoutTrajectory)).toBeNull();
 	});
 
 	it("skips when PI_SUBAGENT_RUN_ID or PI_SUBAGENT_CHILD_AGENT is missing", () => {
-		expect(computeSubagentTrajectoryRewrite({ ...childEnv, PI_SUBAGENT_RUN_ID: undefined })).toBeNull();
-		expect(computeSubagentTrajectoryRewrite({ ...childEnv, PI_SUBAGENT_CHILD_AGENT: undefined })).toBeNull();
+		const { PI_SUBAGENT_RUN_ID: _omitRunId, ...envWithoutRunId } = childEnv;
+		const { PI_SUBAGENT_CHILD_AGENT: _omitChildAgent, ...envWithoutChildAgent } = childEnv;
+		expect(computeSubagentTrajectoryRewrite(envWithoutRunId)).toBeNull();
+		expect(computeSubagentTrajectoryRewrite(envWithoutChildAgent)).toBeNull();
 	});
 
 	it("readDynamoConfig surfaces the synthesized ids", () => {
@@ -132,9 +136,9 @@ describe("pi-subagents trajectory bridge", () => {
 		// passes { ...process.env, ...subagentEnv }. The grandchild then sees
 		// its own synthesized id as inherited DYN_AGENT_TRAJECTORY_ID, so the
 		// next rewrite treats THIS generation as the parent.
+		const { DYN_AGENT_PARENT_TRAJECTORY_ID: _omitParent, ...envWithoutParent } = env;
 		const grandchildEnv = {
-			...env,
-			DYN_AGENT_PARENT_TRAJECTORY_ID: undefined,
+			...envWithoutParent,
 			PI_SUBAGENT_CHILD_AGENT: "subworker",
 			PI_SUBAGENT_CHILD_INDEX: "0",
 		};

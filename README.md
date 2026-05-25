@@ -105,6 +105,87 @@ pi --model dynamo/<model-id> -p "Reply exactly ok."
 
 For local Dynamo, the API key is usually not checked. This package defaults to `dynamo-local` if `DYNAMO_API_KEY` is unset.
 
+
+## Generic Agent Proxy
+
+This repository also ships a standalone Python `dynamo-agent-proxy` CLI for
+agents that can speak OpenAI or Anthropic APIs but cannot load a Pi plugin. The
+proxy is not Pi-specific: it reads `DYNAMO_*` and `DYN_AGENT_*` environment
+variables, injects `nvext.agent_context` / `nvext.agent_hints`, and forwards
+requests to a Dynamo OpenAI-compatible endpoint. Existing unknown `nvext` fields
+are preserved, while proxy-provided context and hint keys take precedence.
+
+Supported client surfaces:
+
+- `POST /v1/chat/completions` - pass-through to Dynamo with `nvext` injection.
+- `POST /v1/responses` - pass-through to Dynamo with `nvext` injection.
+- `POST /v1/messages` - Anthropic Messages API compatibility, translated to
+  Dynamo `/v1/chat/completions` and translated back to Anthropic responses.
+
+Install directly from GitHub with `uv`:
+
+```bash
+uv pip install "dynamo-agent-proxy @ git+ssh://git@github.com:ai-dynamo/pi-dynamo-provider.git"
+```
+
+For local development from a checkout:
+
+```bash
+uv pip install -e .
+```
+
+Run the proxy:
+
+```bash
+export DYNAMO_BASE_URL=http://127.0.0.1:8000/v1
+export DYNAMO_API_KEY=dummy
+export DYN_AGENT_SESSION_TYPE_ID=generic_agent
+export DYN_AGENT_SESSION_ID=agent-demo-001
+export DYN_AGENT_TRAJECTORY_ID=agent-demo-001:main
+
+dynamo-agent-proxy --listen-port 18080 --priority 5 --osl 1024
+```
+
+Point OpenAI-compatible clients at:
+
+```text
+http://127.0.0.1:18080/v1
+```
+
+Point Anthropic-compatible clients at:
+
+```text
+http://127.0.0.1:18080
+```
+
+For example, an Anthropic client will call `POST /v1/messages`; the proxy maps
+that request onto Dynamo's OpenAI-compatible `/v1/chat/completions` endpoint.
+Tool definitions and tool-choice hints are converted between Anthropic tool
+schemas and OpenAI function tools.
+
+Proxy-specific options mirror the environment variables:
+
+```text
+--listen-host HOST          Bind host. Default: 127.0.0.1
+--listen-port PORT          Bind port. Default: 18080
+--upstream URL              Dynamo OpenAI-compatible base URL. Default: http://127.0.0.1:8000/v1
+--api-key KEY               Bearer token sent to Dynamo. Default: dynamo-local
+--model MODEL               Fallback model for Anthropic requests without model
+--session-type-id VALUE     nvext.agent_context.session_type_id. Default: generic_agent
+--session-id VALUE          nvext.agent_context.session_id. Default: generated proxy id
+--trajectory-id VALUE       nvext.agent_context.trajectory_id. Default: <session-id>:main
+--parent-trajectory-id ID   Optional parent trajectory id
+--priority INT              Convenience hint for nvext.agent_hints.priority
+--osl INT                   Convenience hint for nvext.agent_hints.osl
+--agent-hint KEY=VALUE      Additional nvext.agent_hints entry; VALUE may be JSON
+```
+
+You can also set `DYN_AGENT_HINTS` to a JSON object, for example:
+
+```bash
+export DYN_AGENT_HINTS='{"priority":5,"osl":1024}'
+```
+
 ## Local Dynamo Launcher
 
 For local onboarding, this repo includes two small Dynamo helper scripts.
@@ -440,6 +521,9 @@ npm install
 npm run check
 npm run test
 npm run build
+
+PYTHONPATH=python python3 -m unittest discover -s test/python
+python3 -m pip wheel . --no-deps --no-build-isolation -w /tmp/dynamo-agent-proxy-wheel
 ```
 
 Run from source without installing:
@@ -483,6 +567,7 @@ Authentication fails:
 Included:
 
 - OpenAI-compatible chat-completions path.
+- Generic proxy for OpenAI `/v1/chat/completions`, OpenAI `/v1/responses`, and Anthropic `/v1/messages`.
 - Model discovery from `/v1/models`.
 - Dynamo request metadata injection.
 - Pi session id as default `trajectory_id`.

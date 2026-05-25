@@ -2,3 +2,9 @@ node_modules/
 dist/
 coverage/
 *.log
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+.pytest_cache/
