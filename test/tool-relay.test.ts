@@ -19,6 +19,7 @@ import {
 const config = {
 	baseUrl: DEFAULT_DYNAMO_BASE_URL,
 	apiKey: "test-key",
+	traceEnabled: true,
 	sessionTypeId: DEFAULT_SESSION_TYPE_ID,
 };
 

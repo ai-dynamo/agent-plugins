@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 Pi extension registering a `dynamo` provider for Dynamo's OpenAI-compatible chat-completions endpoint. Three source files in `src/` (~650 lines total):
 
 - `index.ts` — extension entrypoint; calls `readDynamoConfig`, discovers models via `/v1/models`, registers the provider, wires the tool-event relay.
-- `dynamo-provider.ts` — config + agent_context construction + streamSimple wrapper. Reads `DYN_AGENT_*` and `PI_SUBAGENT_*` env vars; emits `nvext.agent_context` on every LLM request.
+- `dynamo-provider.ts` — config + agent_context construction + streamSimple wrapper + subagent `session_control`. Reads `DYN_AGENT_*` and `PI_SUBAGENT_*` env vars. Gated by the `DYN_AGENT_TRACE` master switch: when set, emits `nvext.agent_context` on every LLM request and drives subagent KV sessions; when unset, registers a plain `dynamo/<model>` provider.
 - `tool-relay.ts` — ZMQ PUSH publisher for Pi tool events. Connects to a Dynamo-bound PULL endpoint. Wire format: `[topic, seq_be_u64, msgpack(AgentTraceRecord)]`.
 
 ## Build, test, check
