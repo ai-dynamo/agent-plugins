@@ -1,497 +1,167 @@
 # pi-dynamo-provider
 
-Pi extension package that registers a `dynamo` provider backed by Dynamo's OpenAI-compatible chat-completions endpoint.
-
-It lets Pi use Dynamo as a normal model provider:
+A Pi extension that registers a `dynamo` provider backed by [Dynamo](https://github.com/ai-dynamo/dynamo)'s OpenAI-compatible endpoint, so Pi can use Dynamo as a normal model:
 
 ```bash
 pi --model dynamo/<model-id>
 ```
 
-The extension also injects Dynamo agent-context metadata on every LLM request and can relay Pi tool events into Dynamo's agent trace sink, so one Dynamo trace can show both LLM requests and Pi tool trajectories.
+With one switch (`DYN_AGENT_TRACE=1`) it also tags every request for Dynamo's agent trace, gives each pi-subagent its own isolated KV session, and can relay Pi tool events into the trace — all without patching `pi-mono`.
 
-## What This Package Does
+## What it does
 
-- Registers a Pi provider named `dynamo`.
-- Discovers models from Dynamo's `/v1/models` endpoint.
-- Delegates chat-completion streaming to Pi's existing OpenAI-compatible provider.
-- Adds `nvext.agent_context` to each request payload.
-- Adds `x-request-id` when the request does not already have one.
-- Optionally sends Pi tool events to Dynamo over ZMQ:
-  - `tool_start`
-  - `tool_end`
-  - `tool_error`
-- Keeps this integration outside `pi-mono`; no Pi core patch is required.
+- **Model provider** — registers `dynamo`, discovers models from `/v1/models` (falls back to `dynamo/default`), and streams via Pi's OpenAI-compatible path.
+- **Agent context** — injects `nvext.agent_context` (session/trajectory identity) so Dynamo can attribute each LLM request in its trace.
+- **Subagent KV isolation** — gives each [pi-subagents](https://github.com/nicobailon/pi-subagents) child its own Dynamo streaming session: opened on its first turn, pinned across turns, and freed deterministically when the subagent finishes. See [Subagent KV isolation](#subagent-kv-isolation).
+- **Tool-event relay** — optionally pushes Pi `tool_start` / `tool_end` / `tool_error` events to Dynamo over ZMQ so one trace shows LLM spans and tool spans together.
 
-Request and tool data flow:
-
-```mermaid
-sequenceDiagram
-    participant Pi
-    participant Provider as pi-dynamo-provider
-    participant Dynamo as Dynamo frontend
-    participant Worker as Dynamo worker
-    participant ToolIngest as Dynamo tool-event ingest
-    participant Trace as Dynamo agent trace sink
-
-    Pi->>Provider: streamSimple(model, context, options)
-    Provider->>Provider: Build agent_context and x-request-id
-    Provider->>Dynamo: POST /v1/chat/completions<br/>nvext.agent_context
-    Dynamo->>Worker: Route request and generate
-    Worker-->>Dynamo: Stream tokens and metrics
-    Dynamo->>Trace: request_end<br/>timing, tokens, cache, agent_context, x_request_id
-    Dynamo-->>Provider: SSE chunks
-    Provider-->>Pi: Assistant event stream
-
-    Pi->>Provider: tool_execution_start
-    Provider->>ToolIngest: ZMQ PUSH tool_start<br/>[topic, seq_be_u64, msgpack(record)]
-    ToolIngest->>Trace: tool_start
-
-    Pi->>Provider: tool_execution_end
-    Provider->>ToolIngest: ZMQ PUSH tool_end or tool_error<br/>[topic, seq_be_u64, msgpack(record)]
-    ToolIngest->>Trace: tool_end or tool_error
-
-    Note over Trace: Dynamo's Perfetto converter renders LLM spans and Pi tool spans from the same trace.
-```
+Everything but the bare model provider is gated by the `DYN_AGENT_TRACE` master switch and is off by default.
 
 ## Install
 
-From npm, after the package is published:
-
 ```bash
-pi install npm:pi-dynamo-provider
-```
+# From this repo
+pi install git:git@github.com:ai-dynamo/pi-dynamo-provider.git
 
-From this GitHub repo:
-
-```bash
-pi install git:git@github.com:NVIDIA-dev/pi-dynamo-provider.git
-```
-
-For a project-local install that can be checked into `.pi/settings.json`, add `-l`:
-
-```bash
-pi install -l git:git@github.com:NVIDIA-dev/pi-dynamo-provider.git
-```
-
-For local development from a checkout:
-
-```bash
-git clone git@github.com:NVIDIA-dev/pi-dynamo-provider.git
-cd pi-dynamo-provider
-npm install
-npm run build
-
+# Or from a local checkout (after `npm install && npm run build`)
 pi install /absolute/path/to/pi-dynamo-provider
-```
 
-You can also try the extension for one run without installing it:
-
-```bash
-cd /absolute/path/to/pi-dynamo-provider
+# Or try it for a single run, no install
 pi -e ./src/index.ts --model dynamo/<model-id>
 ```
 
-## Quick Start
+## Quick start
 
-Start Dynamo with an OpenAI-compatible endpoint, then point Pi at it:
+Point Pi at a running Dynamo endpoint:
 
 ```bash
 export DYNAMO_BASE_URL=http://127.0.0.1:8000/v1
-export DYNAMO_API_KEY=dummy
+export DYNAMO_API_KEY=dummy        # local Dynamo usually ignores this; defaults to dynamo-local
+export DYN_AGENT_TRACE=1           # opt into agent_context + subagent KV isolation
 
 pi --model dynamo/<model-id> -p "Reply exactly ok."
 ```
 
-For local Dynamo, the API key is usually not checked. This package defaults to `dynamo-local` if `DYNAMO_API_KEY` is unset.
+That's the whole required setup. Everything else (`session_type_id`, `trajectory_id`, `session_id`, timeouts) has a sensible default and is only set when you want to override it — see [Configuration](#configuration).
 
-## Local Dynamo Launcher
+## Subagent KV isolation
 
-For local onboarding, this repo includes two small Dynamo helper scripts.
+Agentic runs spawn short-lived subagents that accumulate KV cache, use it for a few turns, then exit. Left in the shared radix tree, that ephemeral KV competes with the lead agent's long-lived prefix for eviction. Dynamo's streaming sessions hold a subagent's KV in a dedicated slot — invisible to eviction, freed on close.
 
-First install Dynamo from the current mooncake replay branch:
+When `DYN_AGENT_TRACE=1` and this process is a pi-subagents child, the provider drives that lifecycle automatically via `nvext.session_control`:
 
-```bash
-./scripts/install-dynamo.sh
+```mermaid
+sequenceDiagram
+    participant Child as Subagent (child pi process)
+    participant Dynamo
+    Note over Child: session_id = runId:childAgent:childIndex
+    Child->>Dynamo: turn 1   action "open"   (worker holds KV in a session slot)
+    Child->>Dynamo: turn 2+  session_id only (sticky: O(1) KV restore)
+    Note over Child: agent_end -> close request frees the KV deterministically
 ```
 
-That script:
+- The session id is the subagent's own identity (`PI_SUBAGENT_RUN_ID:PI_SUBAGENT_CHILD_AGENT:PI_SUBAGENT_CHILD_INDEX`), so it needs no extra operator setup.
+- The **lead agent is never pinned** — only subagents get a session, so primary requests stay load-balanced.
+- Close fires on `agent_end` (with `session_shutdown` as a backstop). If neither lands, Dynamo's idle timeout reaps the session; tune it with `DYN_AGENT_SESSION_TIMEOUT`.
 
-- clones Dynamo into `${XDG_CACHE_HOME:-$HOME/.cache}/pi-dynamo-provider/dynamo`;
-- checks out `ishan/mooncake-replay-hashes` by default;
-- creates `.venv` with `uv`;
-- builds Dynamo Python bindings with `maturin develop --uv`;
-- installs Dynamo with `uv pip install -e .`.
+Requires a Dynamo frontend in `--router-mode kv` and an SGLang worker launched with `--enable-streaming-session` (SGLang ≥ 0.5.11). Against any other backend the `session_control` hint is ignored, so it is always safe to leave on.
 
-Then launch GLM-4.7-Flash:
+> The provider also links parent/child **trajectory ids** for tracing when `DYN_AGENT_TRAJECTORY_ID` is set on the root. This is independent of KV isolation — see [Trajectory linking](#trajectory-linking).
 
-```bash
-./scripts/launch-agg-agent.sh
-```
+## Configuration
 
-The launch script:
-
-- serves `zai-org/GLM-4.7-Flash` by default;
-- launches one Dynamo frontend plus one SGLang worker;
-- defaults to one visible GPU, `CUDA_VISIBLE_DEVICES=0`, and `--tp 1`;
-- uses file discovery, TCP request plane, and ZMQ event plane;
-- does not require NATS or etcd;
-- enables Dynamo JSONL agent tracing and Pi tool-event ingest.
-
-After the model is ready, it prints the exact Pi env vars to use from another shell.
-
-Common install overrides:
-
-```bash
-./scripts/install-dynamo.sh --workdir /ephemeral/pi-dynamo
-./scripts/install-dynamo.sh --dynamo-dir /home/nvidia/dynamo
-./scripts/install-dynamo.sh --dynamo-ref ishan/mooncake-replay-hashes
-```
-
-Common launch overrides:
-
-```bash
-# Pick a different single GPU.
-./scripts/launch-agg-agent.sh --gpu 1
-
-# Forward extra flags to dynamo.sglang.
-./scripts/launch-agg-agent.sh -- --disable-cuda-graph
-```
-
-For one worker across multiple GPUs, expose those GPUs and match tensor parallelism:
-
-```bash
-./scripts/launch-agg-agent.sh --gpu 0,1 --tp 2
-```
-
-Use that form if GLM-4.7-Flash does not fit on one GPU.
-
-## Dynamo Requirements
-
-Minimum:
-
-- Dynamo serves an OpenAI-compatible `/v1/chat/completions` endpoint.
-- Dynamo serves `/v1/models`, or you are willing to use the fallback model id `dynamo/default`.
-- Pi can reach `DYNAMO_BASE_URL` from the machine running Pi.
-
-For request tracing:
-
-- Dynamo agent tracing must be enabled.
-- Pi requests must include `nvext.agent_context`, which this package injects.
-
-For tool tracing:
-
-- Dynamo must include the tool-event ingest/relay support.
-- Dynamo binds the ZMQ PULL endpoint, and Pi connects a ZMQ PUSH socket to the same endpoint.
-- Pi must run with tools enabled and execute at least one tool.
-
-Dynamo owns the bind side so multiple Pi plugins, subagents, or tool worker processes can all connect as producers without competing to bind the same local endpoint.
-
-Equivalent manual Dynamo launch shape:
-
-```bash
-cd ${XDG_CACHE_HOME:-$HOME/.cache}/pi-dynamo-provider/dynamo
-source .venv/bin/activate
-
-export CUDA_VISIBLE_DEVICES=0
-export DYN_HTTP_PORT=18083
-export DYN_DISCOVERY_BACKEND=file
-export DYN_REQUEST_PLANE=tcp
-export DYN_EVENT_PLANE=zmq
-export DYN_FILE_KV=/tmp/dynamo-file-kv
-export DYN_AGENT_TRACE=1
-export DYN_AGENT_TRACE_SINKS=jsonl
-export DYN_AGENT_TRACE_OUTPUT_PATH=/tmp/dynamo-agent-trace.jsonl
-
-python3 -m dynamo.frontend \
-  --discovery-backend file \
-  --request-plane tcp \
-  --event-plane zmq \
-  --router-mode round-robin &
-
-DYN_SYSTEM_PORT=18084 python3 -m dynamo.sglang \
-  --discovery-backend file \
-  --request-plane tcp \
-  --event-plane zmq \
-  --model-path zai-org/GLM-4.7-Flash \
-  --served-model-name zai-org/GLM-4.7-Flash \
-  --page-size 16 \
-  --tp 1 \
-  --trust-remote-code \
-  --enable-streaming-session \
-  --skip-tokenizer-init \
-  --dyn-reasoning-parser glm45 \
-  --dyn-tool-call-parser glm47 \
-  --enable-metrics
-```
-
-Then run Pi:
-
-```bash
-export DYNAMO_BASE_URL=http://127.0.0.1:18083/v1
-export DYNAMO_API_KEY=dummy
-
-export DYN_AGENT_SESSION_TYPE_ID=pi_coding_agent
-export DYN_AGENT_SESSION_ID=pi-demo-001
-export DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390
-
-pi --model dynamo/zai-org/GLM-4.7-Flash \
-  -p "Run the tests in this folder, fix the smallest bug, and rerun the tests."
-```
-
-## Subagent Trajectory Linking
-
-When [`nicobailon/pi-subagents`](https://github.com/nicobailon/pi-subagents) (or a compatible spawner) launches a child Pi process, the child inherits the parent's `process.env` — including `DYN_AGENT_TRAJECTORY_ID`. Without intervention, parent and child emit identical `trajectory_id` values to Dynamo and the parent/child distinction collapses in the trace.
-
-This package detects that situation and rewrites the agent context. When `PI_SUBAGENT_CHILD=1` is set on a child process AND `DYN_AGENT_PARENT_TRAJECTORY_ID` is not manually set:
-
-- The inherited `DYN_AGENT_TRAJECTORY_ID` is reinterpreted as the **parent's** trajectory id.
-- A fresh child `trajectory_id` is synthesized as `${PI_SUBAGENT_RUN_ID}:${PI_SUBAGENT_CHILD_AGENT}:${PI_SUBAGENT_CHILD_INDEX}` (the index defaults to `0`).
-- `process.env` is mutated so that any subagents this child itself spawns inherit the correct parent → child chain. Nested chains stay attributable instead of collapsing back to the root.
-
-Manual override always wins: setting `DYN_AGENT_PARENT_TRAJECTORY_ID` explicitly disables the bridge. The pi-subagents-side env requirements (`PI_SUBAGENT_RUN_ID` and `PI_SUBAGENT_CHILD_AGENT` populated) match what `nicobailon/pi-subagents` already sets via `buildPiArgs` — no upstream change is needed.
-
-Worked example with a parent that spawns `researcher[2]`:
-
-```text
-parent process:                       trajectory_id=root-traj
-                                      parent_trajectory_id=(unset)
-
-pi-subagents spawns researcher child with env:
-  DYN_AGENT_TRAJECTORY_ID=root-traj   (inherited verbatim)
-  PI_SUBAGENT_CHILD=1
-  PI_SUBAGENT_RUN_ID=run-1
-  PI_SUBAGENT_CHILD_AGENT=researcher
-  PI_SUBAGENT_CHILD_INDEX=2
-
-child process after applySubagentBridge:
-                                      trajectory_id=run-1:researcher:2
-                                      parent_trajectory_id=root-traj
-```
-
-If you do not use pi-subagents (or any tool that sets `PI_SUBAGENT_CHILD=1`), this code path is inert — `readDynamoConfig` falls through to the normal env reads.
-
-## Model Names
-
-Use Pi model names in this form:
-
-```text
-dynamo/<model-id-from-dynamo>
-```
-
-Examples:
-
-```bash
-pi --model dynamo/zai-org/GLM-4.7-Flash
-pi --model dynamo/Qwen/Qwen3-32B
-```
-
-On startup, the extension calls:
-
-```text
-<DYNAMO_BASE_URL>/models
-```
-
-If model discovery fails, the extension still registers:
-
-```text
-dynamo/default
-```
-
-That fallback is useful for smoke tests against minimal OpenAI-compatible endpoints, but normal Dynamo runs should use the actual model id returned by `/v1/models`.
-
-<details>
-<summary>Pi-side environment variables</summary>
+The only thing you must set is the connection (`DYNAMO_BASE_URL`) and, to enable the agentic features, `DYN_AGENT_TRACE`. Everything below is an optional override.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DYNAMO_BASE_URL` | `http://127.0.0.1:8000/v1` | Dynamo OpenAI-compatible endpoint root. |
-| `OPENAI_BASE_URL` | unset | Fallback endpoint root when `DYNAMO_BASE_URL` is unset. |
-| `DYNAMO_API_KEY` | `dynamo-local` | Bearer token sent to Dynamo. Local Dynamo usually accepts a dummy value. |
-| `DYN_AGENT_SESSION_TYPE_ID` | `pi_coding_agent` | Stable session type used by Dynamo traces/profilers. |
-| `DYN_AGENT_SESSION_ID` | unset | Session/run id. If unset for tool events, the Pi session id is used. |
-| `DYN_AGENT_TRAJECTORY_ID` | unset | Trajectory id override. If unset, Pi's session id is used per request. |
-| `DYN_AGENT_PARENT_TRAJECTORY_ID` | unset | Optional parent trajectory id for nested/subagent workflows. Manual value overrides the subagent bridge. |
-| `PI_SUBAGENT_CHILD` | unset | Read, not set. When `1`, the trajectory bridge rewrites `trajectory_id` / `parent_trajectory_id` from pi-subagents bookkeeping. See [Subagent Trajectory Linking](#subagent-trajectory-linking). |
-| `PI_SUBAGENT_RUN_ID` | unset | Read, not set. pi-subagents run identifier; used by the trajectory bridge. |
-| `PI_SUBAGENT_CHILD_AGENT` | unset | Read, not set. pi-subagents child-agent name; used by the trajectory bridge. |
-| `PI_SUBAGENT_CHILD_INDEX` | unset | Read, not set. pi-subagents sibling index; defaults to `0`. |
-| `DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT` | unset | Dynamo-bound ZMQ PULL endpoint Pi connects to for tool events. |
-| `DYN_AGENT_TRACE_TOOL_ZMQ_ENDPOINT` | unset | Alias for the tool-event endpoint. |
-| `DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` | unset | Alias for the tool-event endpoint. |
-| `DYN_AGENT_TOOL_EVENTS_ZMQ_TOPIC` | `agent-tool-events` | ZMQ topic frame. |
-| `DYN_AGENT_TRACE_TOOL_ZMQ_TOPIC` | unset | Alias for the tool-event topic. |
-| `DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_TOPIC` | unset | Alias for the tool-event topic. |
-| `DYN_AGENT_TOOL_EVENTS_QUEUE_CAPACITY` | `100000` | Local publish queue capacity before tool events are dropped. |
+| `DYNAMO_BASE_URL` | `http://127.0.0.1:8000/v1` | Dynamo endpoint root (falls back to `OPENAI_BASE_URL`). |
+| `DYNAMO_API_KEY` | `dynamo-local` | Bearer token. |
+| `DYN_AGENT_TRACE` | off | **Master switch.** When truthy (`1`/`true`/`yes`/`on`), enables `agent_context`, subagent session_control, and the tool relay. |
+| `DYN_AGENT_SESSION_TYPE_ID` | `pi_coding_agent` | Session class in the trace. |
+| `DYN_AGENT_SESSION_ID` | Pi session id | Top-level run id. |
+| `DYN_AGENT_TRAJECTORY_ID` | Pi session id | Trajectory id; also enables parent/child [trajectory linking](#trajectory-linking) for subagents. |
+| `DYN_AGENT_PARENT_TRAJECTORY_ID` | unset | Parent trajectory; set manually to override the bridge. |
+| `DYN_AGENT_SESSION_TIMEOUT` | Dynamo default (300s) | Idle timeout (seconds) sent on a subagent session open. |
+| `DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT` | unset | Dynamo-bound ZMQ PULL endpoint for the tool relay (aliases: `DYN_AGENT_TRACE_TOOL_ZMQ_ENDPOINT`, `DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT`). |
 
-</details>
-
-<details>
-<summary>Dynamo-side environment variables</summary>
-
-These are the Dynamo variables most commonly needed for Pi traces. Exact launch details can differ by Dynamo backend and branch.
-
-| Variable | Example | Purpose |
-| --- | --- | --- |
-| `DYN_HTTP_PORT` | `18083` | Dynamo HTTP port for `/v1/models` and `/v1/chat/completions`. |
-| `DYN_AGENT_TRACE` | `1` | Master switch. Enables tracing with `jsonl_gz` sinks at `/tmp/dynamo-agent-trace` and a tool-event ZMQ endpoint at `tcp://127.0.0.1:20390`. |
-| `DYN_AGENT_TRACE_SINKS` | `jsonl` | Override the default `jsonl_gz` (uncompressed is easier to tail/jq during interactive runs). |
-| `DYN_AGENT_TRACE_OUTPUT_PATH` | `/tmp/dynamo-agent-trace.jsonl` | Override the default `/tmp/dynamo-agent-trace`. |
-| `DYN_AGENT_TRACE_JSONL_FLUSH_INTERVAL_MS` | `100` | Optional flush interval for faster interactive validation. |
-| `DYN_DISCOVERY_BACKEND` | `file` | File-backed local discovery; avoids etcd. |
-| `DYN_REQUEST_PLANE` | `tcp` | TCP request distribution from frontend to worker. |
-| `DYN_EVENT_PLANE` | `zmq` | ZMQ local event plane; avoids NATS. |
-| `DYN_FILE_KV` | `/tmp/dynamo-file-kv` | File discovery state directory. |
-
-</details>
+`PI_SUBAGENT_CHILD` / `PI_SUBAGENT_RUN_ID` / `PI_SUBAGENT_CHILD_AGENT` / `PI_SUBAGENT_CHILD_INDEX` are **read, never set** — pi-subagents populates them and the provider uses them to derive the subagent session id and trajectory link.
 
 <details>
 <summary>Injected request metadata</summary>
 
-Every LLM request payload gets:
+With `DYN_AGENT_TRACE` on, each request payload gets:
 
 ```json
 {
   "nvext": {
     "agent_context": {
       "session_type_id": "pi_coding_agent",
-      "session_id": "pi-demo-001",
+      "session_id": "<pi-session-id>",
       "trajectory_id": "<pi-session-id>",
-      "parent_trajectory_id": "<optional-parent>",
       "phase": "reasoning"
-    }
+    },
+    "session_control": { "session_id": "run-1:researcher:0", "action": "open" }
   }
 }
 ```
 
-The extension preserves existing `nvext` fields and existing `nvext.agent_context` fields. It also adds `x-request-id` if the caller did not already set one.
-
+`session_control` appears only for pi-subagents children. Existing `nvext` fields are preserved, and `x-request-id` is added when absent.
 </details>
 
 <details>
 <summary>Tool-event wire format</summary>
 
-When `DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT` or one of its aliases is configured, Pi connects a ZMQ PUSH socket and sends one multipart message per tool event:
+When a tool-event endpoint is set, Pi connects a ZMQ PUSH socket and sends one multipart message per event:
 
 ```text
 [topic, seq_be_u64, msgpack(AgentTraceRecord)]
 ```
 
-The decoded `AgentTraceRecord` uses Dynamo's agent trace schema:
-
-```json
-{
-  "schema": "dynamo.agent.trace.v1",
-  "event_type": "tool_end",
-  "event_time_unix_ms": 1777915663000,
-  "event_source": "harness",
-  "agent_context": {
-    "session_type_id": "pi_coding_agent",
-    "session_id": "pi-demo-001",
-    "trajectory_id": "<pi-session-id>"
-  },
-  "tool": {
-    "tool_call_id": "<pi-tool-call-id>",
-    "tool_class": "bash",
-    "started_at_unix_ms": 1777915662000,
-    "ended_at_unix_ms": 1777915663000,
-    "duration_ms": 1000,
-    "status": "succeeded",
-    "output_bytes": 1234
-  }
-}
-```
-
-Terminal `tool_end` and `tool_error` records include enough timing information to render a span even if a consumer missed the corresponding `tool_start`.
-
+The record uses Dynamo's `dynamo.agent.trace.v1` schema (`event_type`, `agent_context`, and a `tool` object with timing/status). Dynamo owns the PULL bind side, so multiple Pi processes and subagents can all connect as producers. Terminal `tool_end` / `tool_error` records are self-contained.
 </details>
 
-## Generate Perfetto
+## Trajectory linking
 
-After a run, convert the Dynamo JSONL trace:
+For tracing (not KV isolation), the provider keeps parent and child trajectory ids distinct. When a pi-subagents child inherits the parent's `DYN_AGENT_TRAJECTORY_ID`, the provider reinterprets it as the child's `parent_trajectory_id` and synthesizes a fresh child `trajectory_id` (`runId:childAgent:childIndex`), mutating `process.env` so nested chains stay attributable. Setting `DYN_AGENT_PARENT_TRAJECTORY_ID` manually disables this. If you don't set `DYN_AGENT_TRAJECTORY_ID` at all, every agent simply uses its own Pi session id and the trace still works — only the explicit parent→child link is absent.
+
+## Local Dynamo
+
+Two helper scripts onboard a local Dynamo for testing:
 
 ```bash
-cd /home/nvidia/dynamo
-source .venv/bin/activate
-
-python benchmarks/agent_trace/convert_to_perfetto.py \
-  /tmp/dynamo-agent-trace.jsonl \
-  --include-markers \
-  --separate-stage-tracks \
-  --output /tmp/dynamo-agent-trace.perfetto.json
+./scripts/install-dynamo.sh    # clone + build Dynamo into a cache dir via uv + maturin
+./scripts/launch-agg-agent.sh  # serve GLM-4.7-Flash: one frontend + one SGLang worker
 ```
 
-Open the generated JSON in Perfetto UI:
+`launch-agg-agent.sh` uses file discovery + TCP + ZMQ (no NATS/etcd), enables streaming sessions and JSONL tracing, and prints the exact Pi env to use. Common overrides:
 
-```text
-https://ui.perfetto.dev
+```bash
+./scripts/launch-agg-agent.sh --gpu 1            # different single GPU
+./scripts/launch-agg-agent.sh --gpu 0,1 --tp 2   # one worker across two GPUs
+./scripts/launch-agg-agent.sh -- --disable-cuda-graph   # forward flags to dynamo.sglang
 ```
 
-Expected trace shape:
-
-- `dynamo.llm` spans for LLM requests.
-- `dynamo.llm.stage` spans for prefill/decode stages when Dynamo records them.
-- `dynamo.agent.tool` spans for Pi tools when ZMQ tool relay is enabled.
+> Subagent KV isolation additionally needs `--router-mode kv` on the frontend (which requires a NATS event plane). The default launcher is the no-NATS tracing setup; switch the event plane to `nats` and add `--router-mode kv` to exercise session_control end to end.
 
 ## Development
 
 ```bash
 npm install
-npm run check
-npm run test
-npm run build
+npm run check   # tsc --noEmit (strict)
+npm run test    # vitest
+npm run build   # -> dist/
 ```
 
-Run from source without installing:
-
-```bash
-export DYNAMO_BASE_URL=http://127.0.0.1:8000/v1
-pi -e ./src/index.ts --model dynamo/<model-id>
-```
+`scripts/integration-smoke.sh` boots Dynamo's frontend + mocker and asserts the `nvext` envelope round-trips into the trace; it is the out-of-band end-to-end check.
 
 ## Troubleshooting
 
-`/v1/models` is empty:
+- **`/v1/models` empty** — wait for the backend to load; confirm frontend and worker share the same discovery/request/event planes and `DYN_FILE_KV`.
+- **Model unknown** — `curl "$DYNAMO_BASE_URL/models"` and use the returned id as `dynamo/<id>`; restart Pi if discovery failed before Dynamo was ready.
+- **No agent_context / 400 on requests** — make sure `DYN_AGENT_TRACE` is set; the provider injects nothing without it.
+- **Tool spans missing** — set a tool-event endpoint on both sides and confirm the run actually used tools.
+- **No subagent sessions** — needs `DYN_AGENT_TRACE=1`, a pi-subagents child (`PI_SUBAGENT_*` populated), `--router-mode kv`, and a worker with `--enable-streaming-session`.
 
-- Wait for the Dynamo backend to finish loading.
-- Check Dynamo logs for worker registration failures.
-- For local onboarding, make sure frontend and worker use the same `DYN_DISCOVERY_BACKEND=file`, `DYN_REQUEST_PLANE=tcp`, `DYN_EVENT_PLANE=zmq`, and `DYN_FILE_KV`.
+## Scope
 
-Pi says the model is unknown:
-
-- Run `curl -s "$DYNAMO_BASE_URL/models"` and use the returned id as `dynamo/<id>`.
-- If discovery failed during Pi startup, restart Pi after Dynamo is ready.
-
-LLM traces exist but tool spans are missing:
-
-- Confirm Dynamo is launched with `DYN_AGENT_TRACE=1` (binds the tool ZMQ endpoint at `tcp://127.0.0.1:20390` by default).
-- Set `DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390` on Pi (or override both sides to match).
-- Confirm the Pi run actually used tools.
-
-Tool spans exist but request spans do not:
-
-- Confirm Dynamo is launched with `DYN_AGENT_TRACE=1`.
-- Confirm the request reached Dynamo's `/v1/chat/completions` endpoint.
-
-Authentication fails:
-
-- Set `DYNAMO_API_KEY` to the token expected by your Dynamo deployment.
-- For local Dynamo, `DYNAMO_API_KEY=dummy` is usually sufficient.
-
-## Current Scope
-
-Included:
-
-- OpenAI-compatible chat-completions path.
-- Model discovery from `/v1/models`.
-- Dynamo request metadata injection.
-- Pi session id as default `trajectory_id`.
-- Optional ZMQ tool-event relay into Dynamo traces.
-- Perfetto-compatible trace output through Dynamo's converter.
-
-Not included:
-
-- No `pi-mono` core changes.
-- No native Rust Pi extension ABI. A Rust implementation would still need a TypeScript/JavaScript package entrypoint, for example through N-API.
-- No automatic Dynamo launch management.
-- No automatic Perfetto upload or viewer hosting.
+No `pi-mono` core changes, no native Rust ABI, no Dynamo launch management beyond the helper scripts. The `nvext` and `agent_trace.v1` schemas are owned upstream by Dynamo.
