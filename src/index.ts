@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	applySubagentBridge,
+	buildDynamoAgentContext,
 	createDynamoModels,
 	createDynamoProviderConfig,
 	DEFAULT_DYNAMO_MODEL_ID,
@@ -54,6 +56,56 @@ export default async function dynamoProviderExtension(pi: ExtensionAPI): Promise
 		});
 		pi.on("session_shutdown", async () => {
 			await session.close();
+		});
+	}
+
+	// Program close (thunderagent_router): whenever agent_context is being injected
+	// (trace enabled + a trajectory id), release the program from the router's table
+	// when the whole session ends. A throwaway max_tokens=1 request carries
+	// agent_context.trajectory_final; the thunderagent_router short-circuits it
+	// (deletes the program, never forwards to the engine). Best-effort — Dynamo's
+	// idle reaper is the backstop if the process dies before it lands. Separate from
+	// session_control above: that frees SGLang KV; this frees scheduler bookkeeping.
+	const programTrajectoryId = config.trajectoryId ?? config.sessionId;
+	if (config.traceEnabled && programTrajectoryId) {
+		const closeModelId = models[0]?.id ?? DEFAULT_DYNAMO_MODEL_ID;
+		let programClosed = false;
+		const closeProgram = async (): Promise<void> => {
+			if (programClosed) return;
+			programClosed = true;
+			const agentContext = { ...buildDynamoAgentContext(config), trajectory_final: true };
+			try {
+				await fetch(`${config.baseUrl}/chat/completions`, {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						authorization: `Bearer ${config.apiKey}`,
+						"x-request-id": randomUUID(),
+					},
+					body: JSON.stringify({
+						model: closeModelId,
+						messages: [{ role: "user", content: "." }],
+						max_tokens: 1,
+						stream: false,
+						nvext: { agent_context: agentContext },
+					}),
+					signal: AbortSignal.timeout(5000),
+				});
+			} catch {
+				// best-effort: the router's idle reaper is the safety net
+			}
+		};
+		// Agents here are multiturn: the whole interactive session is ONE
+		// trajectory/program (same trajectory_id across every prompt). Release it
+		// once at true teardown — NOT on agent_end, which fires per user prompt and
+		// would close after the first turn, dropping the program's worker/KV affinity
+		// mid-session (later prompts re-create an unreleased program that only decay
+		// reaps). Only reason "quit" means the trajectory is done in this process;
+		// "reload"/"fork"/"new"/"resume" keep the same trajectory_id, so the program
+		// continues. print-mode (batch) also emits "quit" on dispose and awaits the
+		// handler, so one-shot runs still close exactly once.
+		pi.on("session_shutdown", async (event) => {
+			if (event.reason === "quit") await closeProgram();
 		});
 	}
 }

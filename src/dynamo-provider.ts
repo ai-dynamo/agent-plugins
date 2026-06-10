@@ -82,6 +82,8 @@ export interface DynamoAgentContext {
 	session_id?: string;
 	session_type_id: string;
 	phase: "reasoning";
+	// Terminal marker: the thunderagent_router releases the program when set.
+	trajectory_final?: boolean;
 }
 
 interface OpenAIModelsResponse {
