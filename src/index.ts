@@ -13,10 +13,15 @@ import {
 	DynamoSubagentSession,
 	discoverDynamoModels,
 	readDynamoConfig,
+	seedRootTrajectory,
 } from "./dynamo-provider.js";
 import { registerDynamoToolEventRelay } from "./tool-relay.js";
 
 export default async function dynamoProviderExtension(pi: ExtensionAPI): Promise<void> {
+	// Seed a root trajectory id (root only) BEFORE anything spawns subagents, so
+	// the first generation of pi-subagents has a parent to inherit; without it the
+	// bridge no-ops and the whole chain stays flat (no parent_trajectory_id).
+	seedRootTrajectory();
 	// Mutate process.env BEFORE readDynamoConfig so the rewrite also reaches
 	// any pi-subagents this process later spawns. readDynamoConfig itself
 	// recomputes the rewrite independently, so omitting this call still

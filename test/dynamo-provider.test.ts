@@ -18,6 +18,7 @@ import {
 	mergeDynamoSessionControl,
 	normalizeDynamoBaseUrl,
 	readDynamoConfig,
+	seedRootTrajectory,
 } from "../src/dynamo-provider.js";
 
 // Spread `base` with the given keys dropped (env-absent). Avoids the
@@ -166,6 +167,39 @@ describe("pi-subagents trajectory bridge", () => {
 			parentTrajectoryId: "run-1:researcher:2",
 			trajectoryId: "run-1:subworker:0",
 		});
+	});
+});
+
+describe("root trajectory seed", () => {
+	it("seeds DYN_AGENT_TRAJECTORY_ID at the root so subagents inherit a parent", () => {
+		const env: NodeJS.ProcessEnv = { DYN_AGENT_TRACE: "1" };
+		expect(seedRootTrajectory(env, () => "root-traj")).toBe(true);
+		expect(env.DYN_AGENT_TRAJECTORY_ID).toBe("root-traj");
+		// The bug fix: a subagent spawned from this env now resolves a parent.
+		const childEnv = {
+			...env,
+			PI_SUBAGENT_CHILD: "1",
+			PI_SUBAGENT_RUN_ID: "run-1",
+			PI_SUBAGENT_CHILD_AGENT: "researcher",
+		};
+		expect(computeSubagentTrajectoryRewrite(childEnv)).toEqual({
+			parentTrajectoryId: "root-traj",
+			trajectoryId: "run-1:researcher:0",
+		});
+	});
+
+	it("uses DYN_AGENT_SESSION_ID as the root trajectory when present", () => {
+		const env: NodeJS.ProcessEnv = { DYN_AGENT_TRACE: "1", DYN_AGENT_SESSION_ID: "sess-7" };
+		expect(seedRootTrajectory(env, () => "unused")).toBe(true);
+		expect(env.DYN_AGENT_TRAJECTORY_ID).toBe("sess-7");
+	});
+
+	it("no-ops when trace is off, in a subagent child, or trajectory already set", () => {
+		expect(seedRootTrajectory({}, () => "x")).toBe(false);
+		expect(seedRootTrajectory({ DYN_AGENT_TRACE: "1", PI_SUBAGENT_CHILD: "1" }, () => "x")).toBe(false);
+		const preset: NodeJS.ProcessEnv = { DYN_AGENT_TRACE: "1", DYN_AGENT_TRAJECTORY_ID: "caller" };
+		expect(seedRootTrajectory(preset, () => "x")).toBe(false);
+		expect(preset.DYN_AGENT_TRAJECTORY_ID).toBe("caller");
 	});
 });
 
@@ -351,7 +385,7 @@ describe("subagent session control", () => {
 			sessionControlId: "run-1:scout:3",
 			sessionTimeoutSecs: 60,
 		});
-		expect(session.controlForTurn()).toEqual({ session_id: "run-1:scout:3", action: "open", timeout: 60 });
+		expect(session.controlForTurn()).toEqual({ session_id: "run-1:scout:3", timeout: 60 });
 		expect(session.controlForTurn()).toEqual({ session_id: "run-1:scout:3", timeout: 60 });
 		expect(session.controlForTurn()).toEqual({ session_id: "run-1:scout:3", timeout: 60 });
 	});
@@ -362,25 +396,25 @@ describe("subagent session control", () => {
 			apiKey: "k",
 			sessionControlId: "sess-1",
 		});
-		expect(session.controlForTurn()).toEqual({ session_id: "sess-1", action: "open" });
+		expect(session.controlForTurn()).toEqual({ session_id: "sess-1" });
 	});
 
 	it("merges nvext.session_control without dropping existing nvext fields", () => {
 		const payload = mergeDynamoSessionControl(
 			{ model: "demo", nvext: { extra_fields: ["worker_id"], agent_context: { phase: "reasoning" } } },
-			{ session_id: "sess-1", action: "open", timeout: 60 },
+			{ session_id: "sess-1", timeout: 60 },
 		);
 		expect(payload).toEqual({
 			model: "demo",
 			nvext: {
 				extra_fields: ["worker_id"],
 				agent_context: { phase: "reasoning" },
-				session_control: { session_id: "sess-1", action: "open", timeout: 60 },
+				session_control: { session_id: "sess-1", timeout: 60 },
 			},
 		});
 	});
 
-	it("close fires a throwaway action:close request, is idempotent, and skips before any open", async () => {
+	it("close fires a throwaway action:close request, is idempotent, and skips before any turn", async () => {
 		const calls: Array<{ url: string; body: unknown; headers: unknown }> = [];
 		const fakeFetch = async (url: string, init: RequestInit) => {
 			calls.push({
@@ -396,11 +430,11 @@ describe("subagent session control", () => {
 			() => "close-req-1",
 		);
 
-		// No turn has opened the session yet: close is a no-op.
+		// No turn has tagged the session yet: close is a no-op.
 		expect(await session.close(fakeFetch)).toBe(false);
 		expect(calls).toHaveLength(0);
 
-		session.controlForTurn(); // open
+		session.controlForTurn(); // first tagged turn
 		session.modelId = "zai-org/GLM-4.7-Flash";
 
 		expect(await session.close(fakeFetch)).toBe(true);
@@ -417,7 +451,7 @@ describe("subagent session control", () => {
 		expect((calls[0]?.headers as Record<string, string>)["x-request-id"]).toBe("close-req-1");
 	});
 
-	it("re-opens on the next turn after a close (multi-prompt subagent)", async () => {
+	it("re-arms on the next turn after a close (multi-prompt subagent)", async () => {
 		const fakeFetch = async () => ({ ok: true, status: 200 });
 		const session = new DynamoSubagentSession({
 			baseUrl: "http://dynamo.test/v1",
@@ -425,12 +459,11 @@ describe("subagent session control", () => {
 			sessionControlId: "sess-1",
 		});
 
-		expect(session.controlForTurn()).toEqual({ session_id: "sess-1", action: "open" });
+		expect(session.controlForTurn()).toEqual({ session_id: "sess-1" });
 		expect(session.controlForTurn()).toEqual({ session_id: "sess-1" });
 		expect(await session.close(fakeFetch)).toBe(true);
-		// A later prompt's first turn must re-open rather than emit a bare,
-		// already-freed session id.
-		expect(session.controlForTurn()).toEqual({ session_id: "sess-1", action: "open" });
+		// A later prompt's first turn re-tags the session; close fires again.
+		expect(session.controlForTurn()).toEqual({ session_id: "sess-1" });
 		expect(await session.close(fakeFetch)).toBe(true);
 	});
 
@@ -462,7 +495,6 @@ describe("subagent session control", () => {
 		expect(injected.nvext.agent_context).toMatchObject({ phase: "reasoning" });
 		expect(injected.nvext.session_control).toEqual({
 			session_id: "run-1:scout:3",
-			action: "open",
 			timeout: 60,
 		});
 		expect(session.modelId).toBe(DEFAULT_DYNAMO_MODEL_ID);

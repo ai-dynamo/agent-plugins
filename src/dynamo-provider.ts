@@ -193,6 +193,28 @@ export function applySubagentBridge(env: NodeJS.ProcessEnv = process.env): boole
 	return true;
 }
 
+/**
+ * Seed a root trajectory id so spawned pi-subagents have a parent to inherit.
+ * `applySubagentBridge` only fires when a child inherits a non-empty
+ * `DYN_AGENT_TRAJECTORY_ID`; if the root never sets one, the first generation of
+ * subagents inherits nothing, the bridge no-ops, and the whole chain stays flat
+ * (no `parent_trajectory_id`). Only the ROOT seeds — a pi-subagents child already
+ * inherits its parent's id, and a caller-set id wins. Uses `DYN_AGENT_SESSION_ID`
+ * when present (root trajectory == its session) else a fresh id. Gated on
+ * `DYN_AGENT_TRACE`. Mutates env in place; must run before any subagent spawn.
+ * Returns whether a seed was written.
+ */
+export function seedRootTrajectory(
+	env: NodeJS.ProcessEnv = process.env,
+	mkId: () => string = randomUUID,
+): boolean {
+	if (!isTruthyEnv(getEnvValue(env, "DYN_AGENT_TRACE"))) return false;
+	if (getEnvValue(env, "PI_SUBAGENT_CHILD") === "1") return false;
+	if (getEnvValue(env, "DYN_AGENT_TRAJECTORY_ID")) return false;
+	env.DYN_AGENT_TRAJECTORY_ID = getEnvValue(env, "DYN_AGENT_SESSION_ID") ?? mkId();
+	return true;
+}
+
 function parsePositiveIntOrUndefined(value: string | undefined): number | undefined {
 	if (value === undefined) return undefined;
 	const parsed = Number.parseInt(value, 10);
@@ -364,15 +386,14 @@ function toOpenAICompletionsModel(model: Model<Api>): Model<"openai-completions"
 type FetchLike = (input: string, init: RequestInit) => Promise<{ ok: boolean; status: number }>;
 
 /**
- * One streaming session for one pi-subagents child process. Dynamo has no
- * standalone close RPC — close must ride a routed request — so the lifecycle is:
- *   - first turn  -> action "open" (+ timeout): the worker holds this subagent's
- *     KV in a dedicated slot outside the radix tree, invisible to eviction.
- *   - later turns -> bare session_id: the router pins them to the same worker
- *     (O(1) KV restore).
+ * One session for one pi-subagents child process. The radix-native backend has
+ * no open step (the tag is the only session state), so the lifecycle is:
+ *   - every turn -> bare session_id: tags that turn's KV as ordinary, evictable
+ *     radix (LRU-neutral — no pinned slot), and keys sticky routing to one worker.
  *   - on agent_end -> a throwaway max_tokens=1 request carries action "close",
- *     freeing the KV deterministically instead of waiting out the idle timeout.
- * The idle timeout is the safety net if the process dies before close fires.
+ *     bulk-freeing this session's tagged KV instead of waiting for LRU.
+ * Dynamo has no standalone close RPC — close must ride a routed request. If close
+ * never lands (e.g. SIGKILL), the KV is ordinary radix and LRU reclaims it.
  */
 export class DynamoSubagentSession {
 	readonly sessionId: string;
@@ -397,13 +418,12 @@ export class DynamoSubagentSession {
 		this.createRequestId = createRequestId;
 	}
 
-	/** Build session_control for the current turn and advance lifecycle state. */
+	/** Build session_control for the current turn. No open step under radix-native:
+	 * the bare session_id tags this turn's KV; `opened` only gates the close. */
 	controlForTurn(): DynamoSessionControl {
-		const action = this.opened ? undefined : ("open" as const);
 		this.opened = true;
 		return {
 			session_id: this.sessionId,
-			...(action ? { action } : {}),
 			...(this.timeoutSecs !== undefined ? { timeout: this.timeoutSecs } : {}),
 		};
 	}
@@ -414,10 +434,10 @@ export class DynamoSubagentSession {
 	 * block Pi's shutdown on it). The 5s timeout bounds a hung frontend; the idle
 	 * reaper covers the case where this never lands.
 	 *
-	 * Re-openable: clearing `opened` synchronously both guards a double-fire
-	 * (agent_end then session_shutdown) and lets a later turn re-emit `action:
-	 * "open"`. agent_end fires once per prompt, so a multi-prompt subagent frees
-	 * its KV between prompts and re-warms a fresh session on the next one.
+	 * Re-armable: clearing `opened` synchronously both guards a double-fire
+	 * (agent_end then session_shutdown) and lets a later turn re-tag a fresh
+	 * session. agent_end fires once per prompt, so a multi-prompt subagent frees
+	 * its KV between prompts and re-warms on the next one's first tagged turn.
 	 */
 	async close(fetchImpl: FetchLike = fetch): Promise<boolean> {
 		if (!this.opened) return false;

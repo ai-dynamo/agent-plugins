@@ -68,8 +68,8 @@ describe("program close (trajectory_final) — multiturn", () => {
 		const closeBodies = installFetch();
 		const { pi, handlers } = makePi();
 		await dynamoProviderExtension(pi as any);
-		await handlers.session_shutdown({ type: "session_shutdown", reason: "reload" });
-		await handlers.session_shutdown({ type: "session_shutdown", reason: "fork" });
+		await handlers.session_shutdown!({ type: "session_shutdown", reason: "reload" });
+		await handlers.session_shutdown!({ type: "session_shutdown", reason: "fork" });
 		expect(closeBodies).toHaveLength(0);
 	});
 
@@ -77,9 +77,9 @@ describe("program close (trajectory_final) — multiturn", () => {
 		const closeBodies = installFetch();
 		const { pi, handlers } = makePi();
 		await dynamoProviderExtension(pi as any);
-		await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" });
+		await handlers.session_shutdown!({ type: "session_shutdown", reason: "quit" });
 		// idempotent: a second quit (or any later event) must not re-close
-		await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" });
+		await handlers.session_shutdown!({ type: "session_shutdown", reason: "quit" });
 		expect(closeBodies).toHaveLength(1);
 		const ctx = closeBodies[0].nvext.agent_context;
 		expect(ctx.trajectory_final).toBe(true);
