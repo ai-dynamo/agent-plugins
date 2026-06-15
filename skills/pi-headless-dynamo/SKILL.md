@@ -43,17 +43,15 @@ terminal transcript is saved:
 RUN_ROOT=/ephemeral/pi-headless-$(date -u +%Y%m%dT%H%M%SZ)
 WORKSPACE=$RUN_ROOT/workspace
 MODEL=zai-org/GLM-4.7-Flash
-mkdir -p "$WORKSPACE" "$RUN_ROOT/pi-sessions"
+mkdir -p "$WORKSPACE"
 
 export DYNAMO_BASE_URL=http://127.0.0.1:18083/v1
 export DYNAMO_API_KEY=dummy
 export DYN_REQUEST_TRACE=1
-export DYN_AGENT_SESSION_TYPE_ID=pi_coding_agent
-export DYN_AGENT_SESSION_ID=pi-headless-$(date -u +%Y%m%dT%H%M%SZ)
 export DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390
 
 cd "$WORKSPACE"
-script -qefc "pi --model dynamo/${MODEL} --tools subagent,bash,write,read,ls,grep,find --session-dir ${RUN_ROOT}/pi-sessions" "${RUN_ROOT}/pi-terminal.typescript"
+script -qefc "pi --model dynamo/${MODEL} --tools subagent,bash,write,read,ls,grep,find" "${RUN_ROOT}/pi-terminal.typescript"
 ```
 
 Control that process through its PTY like a user:
@@ -66,6 +64,11 @@ Control that process through its PTY like a user:
 
 Do not kill Pi to end a lifecycle run unless it is hung and the failure is the
 thing being tested.
+
+`DYN_AGENT_SESSION_TYPE_ID` and `DYN_AGENT_SESSION_ID` are optional labels. The
+provider defaults `session_type_id` to `pi_coding_agent`; normal LLM requests
+use Pi's own session id when `DYN_AGENT_SESSION_ID` is absent. Set them only
+when a run needs stable, human-chosen trace labels.
 
 ## Drive A Lifecycle Run
 
@@ -83,10 +86,32 @@ default model and fail before reaching the endpoint.
 /parallel delegate[model=dynamo/zai-org/GLM-4.7-Flash,output=child-a.md,outputMode=file-only] "Work only in the current workspace. Create logs/a.md with a concise result. Read it back. End with CHILD_A_DONE." -> delegate[model=dynamo/zai-org/GLM-4.7-Flash,output=child-b.md,outputMode=file-only] "Work only in the current workspace. Create logs/b.md with a concise result. Read it back. End with CHILD_B_DONE." -> delegate[model=dynamo/zai-org/GLM-4.7-Flash,output=child-c.md,outputMode=file-only] "Work only in the current workspace. Create logs/c.md with a concise result. Read it back. End with CHILD_C_DONE."
 ```
 
-Prefer `delegate` for lifecycle plumbing tests. Agents such as `worker`,
-`planner`, and `oracle` may default to forked context; forked context is valid
-but has persisted-session preconditions. If a lifecycle test does not need
-forked context, avoid making that a second variable.
+Prefer `delegate` for fresh-context lifecycle plumbing tests.
+
+## Forked Context
+
+Forked context is a first-class scenario: it is how agents such as `worker`,
+`planner`, and `oracle` inherit the parent conversation. Start with one forked
+child after the parent has completed at least one normal turn, and do not pass a
+custom `--session-dir` while validating fork behavior. Let Pi persist sessions
+where it normally does and collect the session paths from Pi/pi-subagents output
+afterward.
+
+```text
+/run worker[model=dynamo/zai-org/GLM-4.7-Flash,output=fork-worker.md,outputMode=file-only] "Use the inherited parent context. Work only in the current workspace. Create logs/fork-worker.md with one follow-up note, read it back, and end with CHILD_FORK_DONE." --fork
+```
+
+Once the single fork passes, scale to parallel forked children:
+
+```text
+/parallel worker[model=dynamo/zai-org/GLM-4.7-Flash,output=fork-a.md,outputMode=file-only] "Use inherited context. Create logs/fork-a.md, read it back, end CHILD_FORK_A_DONE." -> worker[model=dynamo/zai-org/GLM-4.7-Flash,output=fork-b.md,outputMode=file-only] "Use inherited context. Create logs/fork-b.md, read it back, end CHILD_FORK_B_DONE." --fork
+```
+
+For Dynamo/SGLang, the important expectation is that forked children may share
+the parent's prefix KV. The SGLang session-radix cache supports multiple
+session ids on the same radix node; closing one child must remove only that
+child's holder and must not free a node still held by the parent or another
+forked child.
 
 After Pi reports the children complete, keep talking to the parent without
 subagents:
@@ -108,7 +133,7 @@ Exit the Pi session with Ctrl-D.
 Collect the artifact paths in the final report:
 
 - Pi transcript: `${RUN_ROOT}/pi-terminal.typescript`
-- Pi sessions: `${RUN_ROOT}/pi-sessions`
+- Pi sessions: paths printed by Pi/pi-subagents in the transcript or child result
 - Dynamo trace: the `dynamo-request-trace.jsonl` path printed by the launcher
 - frontend and worker logs from the launcher run directory
 
@@ -151,9 +176,9 @@ The lifecycle ordering to prove:
   use the Dynamo model. Add `model=dynamo/<served-model>` to every subagent
   step or configure `subagents.agentOverrides`.
 - `Failed to create forked subagent session` means a forked-context child could
-  not branch from the parent session. Use `delegate` for fresh-context lifecycle
-  tests, avoid `--fork`, or remove custom session-dir variables while debugging
-  fork behavior.
+  not branch from the parent session. First retry with Pi's normal session
+  storage and no custom `--session-dir`; if it still fails, run
+  `/subagents-doctor` inside Pi and capture the exact parent/child session paths.
 - No `agent_context` or no trace rows means `DYN_REQUEST_TRACE=1` was missing
   from the Pi process environment.
 - No `release_session` after finality usually means Dynamo was not in
