@@ -21,7 +21,7 @@ usage() {
 Usage: scripts/launch-agg-agent.sh [OPTIONS] [-- SGLANG_ARGS...]
 
 Launch Dynamo's OpenAI-compatible frontend plus one SGLang worker for
-GLM-4.7-Flash with agent tracing and Pi tool-event ingest enabled.
+GLM-4.7-Flash with request tracing and Pi tool-event ingest enabled.
 
 This launcher uses file discovery, TCP request plane, and ZMQ event plane.
 It does not require NATS or etcd.
@@ -46,6 +46,7 @@ Environment overrides:
   DYN_HTTP_PORT
   DYN_SYSTEM_PORT
   DYN_REQUEST_TRACE_OUTPUT_PATH
+  DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT
 
 Examples:
   scripts/launch-agg-agent.sh
@@ -163,7 +164,7 @@ Pi environment for another shell:
   export DYNAMO_BASE_URL=http://127.0.0.1:${HTTP_PORT}/v1
   export DYNAMO_API_KEY=dummy
   export DYN_REQUEST_TRACE=1
-  export DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390
+  export DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT=${DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT}
 
 Example Pi command:
 
@@ -177,7 +178,7 @@ Perfetto conversion:
 
   cd ${DYNAMO_DIR}
   source .venv/bin/activate
-  python benchmarks/agent_trace/convert_to_perfetto.py \\
+  python benchmarks/request_trace/convert_to_perfetto.py \\
     ${TRACE_PATH} \\
     --include-markers \\
     --separate-stage-tracks \\
@@ -222,6 +223,7 @@ export DYN_REQUEST_TRACE=1
 export DYN_REQUEST_TRACE_SINKS="${DYN_REQUEST_TRACE_SINKS:-jsonl}"
 export DYN_REQUEST_TRACE_OUTPUT_PATH="$TRACE_PATH"
 export DYN_REQUEST_TRACE_JSONL_FLUSH_INTERVAL_MS="${DYN_REQUEST_TRACE_JSONL_FLUSH_INTERVAL_MS:-100}"
+export DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT="${DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT:-tcp://127.0.0.1:20390}"
 export DYN_LOG="${DYN_LOG:-info}"
 
 log "Run directory: $RUN_DIR"
@@ -234,6 +236,7 @@ log "Request plane: tcp"
 log "Event plane: zmq"
 log "HTTP: http://127.0.0.1:$HTTP_PORT/v1"
 log "Trace JSONL: $TRACE_PATH"
+log "Tool-event ingest: $DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT"
 
 log "Starting Dynamo frontend"
 python3 -m dynamo.frontend \

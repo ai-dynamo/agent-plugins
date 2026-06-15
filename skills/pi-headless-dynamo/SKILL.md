@@ -60,7 +60,8 @@ Control that process through its PTY like a user:
 - paste a full prompt or slash command as text;
 - send Enter to submit;
 - wait for Pi to finish before sending the next prompt;
-- exit with Ctrl-D so root `trajectory_final` is emitted.
+- type `/quit` and wait for process exit so Pi emits `session_shutdown` and
+  the root `trajectory_final`.
 
 Do not kill Pi to end a lifecycle run unless it is hung and the failure is the
 thing being tested.
@@ -126,7 +127,8 @@ Then send one final parent-only turn:
 One final parent-only turn. Do not call subagent. Rank the top two artifacts for follow-up and give one reason each. End with PARENT_FINAL_OK.
 ```
 
-Exit the Pi session with Ctrl-D.
+Exit the Pi session with `/quit`, then wait for the `script(1)` process to exit
+with code 0.
 
 ## Verify Evidence
 
@@ -144,10 +146,12 @@ TRACE_PATH=/path/from/launcher/dynamo-request-trace.jsonl
 FRONTEND_LOG=/path/from/launcher/logs/frontend.log
 WORKER_LOG=/path/from/launcher/logs/worker.log
 
-rg -n "CHILD_.*_DONE|PARENT_AFTER_CHILDREN_OK|PARENT_FINAL_OK" "$RUN_ROOT/pi-terminal.typescript" "$RUN_ROOT/pi-sessions"
+rg -n "CHILD_.*_DONE|PARENT_AFTER_CHILDREN_OK|PARENT_FINAL_OK" "$RUN_ROOT/pi-terminal.typescript"
 
 jq -s '{
   events: length,
+  agent_context_rows: (map(select(.event.agent_context? != null)) | length),
+  trajectory_final_rows: (map(select(.event.agent_context.trajectory_final == true)) | length),
   output_tokens_total: (map(.event.request.output_tokens // 0) | add),
   input_lengths: {
     min: (map(.event.request.replay.input_length // 0) | min),
@@ -170,6 +174,11 @@ The lifecycle ordering to prove:
 3. Root trajectory closes only after Pi exits normally.
 4. The server is stopped and GPUs return to baseline.
 
+With Dynamo request-trace unification (#10701 and later), `agent_context` lives
+on the same `dynamo.request.trace.v1` rows as request metrics. If trace rows are
+present but `agent_context_rows` is zero, check that Pi had
+`DYN_REQUEST_TRACE=1` and that the provider package was installed from this repo.
+
 ## Troubleshooting
 
 - `401 "Invalid username or password."` in child sessions means a child did not
@@ -179,8 +188,13 @@ The lifecycle ordering to prove:
   not branch from the parent session. First retry with Pi's normal session
   storage and no custom `--session-dir`; if it still fails, run
   `/subagents-doctor` inside Pi and capture the exact parent/child session paths.
-- No `agent_context` or no trace rows means `DYN_REQUEST_TRACE=1` was missing
-  from the Pi process environment.
+- No trace rows means Dynamo was not launched with `DYN_REQUEST_TRACE=1` or the
+  trace path points at the wrong run.
+- Trace rows without `agent_context` usually mean Pi was launched without
+  `DYN_REQUEST_TRACE=1` or with a stale provider install.
+- Zero `trajectory_final_rows` after a clean `/quit` usually means the provider
+  install is stale or the endpoint rejected the close ping; check `frontend.log`
+  for the final POST status.
 - No `release_session` after finality usually means Dynamo was not in
   `--router-mode kv`, the worker lacked `--enable-session-radix-cache`, or Pi
-  was killed instead of exited with Ctrl-D.
+  was killed instead of exited with `/quit`.

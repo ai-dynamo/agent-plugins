@@ -31,8 +31,10 @@ export default async function dynamoProviderExtension(pi: ExtensionAPI): Promise
 	const discoveredModels = await discoverDynamoModels(config);
 	const models =
 		discoveredModels.length > 0 ? discoveredModels : createDynamoModels([DEFAULT_DYNAMO_MODEL_ID], config.baseUrl);
+	const closeModelId = models.map((model) => model.id.trim()).find((id) => id.length > 0) ?? DEFAULT_DYNAMO_MODEL_ID;
+	const providerModels = models.map((model) => ({ ...model }));
 
-	pi.registerProvider(DYNAMO_PROVIDER_ID, createDynamoProviderConfig(config, models));
+	pi.registerProvider(DYNAMO_PROVIDER_ID, createDynamoProviderConfig(config, providerModels));
 	if (config.traceEnabled) {
 		await registerDynamoToolEventRelay(pi, config);
 	}
@@ -42,7 +44,6 @@ export default async function dynamoProviderExtension(pi: ExtensionAPI): Promise
 	// trajectory alive across reload/fork/new/resume flows.
 	const programTrajectoryId = config.trajectoryId ?? config.sessionId;
 	if (config.traceEnabled && programTrajectoryId) {
-		const closeModelId = models[0]?.id ?? DEFAULT_DYNAMO_MODEL_ID;
 		let programClosed = false;
 		const closeProgram = async (): Promise<void> => {
 			if (programClosed) return;

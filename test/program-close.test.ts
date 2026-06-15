@@ -11,10 +11,12 @@ import dynamoProviderExtension from "../src/index.js";
 
 type Handler = (event: any, ctx?: any) => unknown | Promise<unknown>;
 
-function makePi() {
+function makePi(onRegisterProvider?: (providerConfig: any) => void) {
 	const handlers: Record<string, Handler> = {};
 	const pi = {
-		registerProvider: vi.fn(),
+		registerProvider: vi.fn((_id: string, providerConfig: any) => {
+			onRegisterProvider?.(providerConfig);
+		}),
 		on: (event: string, handler: Handler) => {
 			handlers[event] = handler;
 		},
@@ -85,6 +87,18 @@ describe("program close (trajectory_final) — multiturn", () => {
 		expect(ctx.trajectory_final).toBe(true);
 		expect(ctx.trajectory_id).toBe("t-1");
 		expect(closeBodies[0].max_tokens).toBe(1);
+	});
+
+	it("uses a stable discovered model id for the shutdown close ping", async () => {
+		const closeBodies = installFetch();
+		const { pi, handlers } = makePi((providerConfig) => {
+			providerConfig.models[0].id = "";
+		});
+		await dynamoProviderExtension(pi as any);
+		await handlers.session_shutdown!({ type: "session_shutdown", reason: "quit" });
+
+		expect(closeBodies).toHaveLength(1);
+		expect(closeBodies[0].model).toBe("nvidia/MiniMax-M2.7-NVFP4");
 	});
 });
 

@@ -13,6 +13,7 @@ import {
 	DEFAULT_DYNAMO_BASE_URL,
 	DEFAULT_DYNAMO_MODEL_ID,
 	DEFAULT_SESSION_TYPE_ID,
+	type DynamoProviderRuntimeConfig,
 	DYNAMO_API,
 	mergeDynamoAgentContext,
 	normalizeDynamoBaseUrl,
@@ -287,9 +288,10 @@ describe("streamSimple wrapper", () => {
 	it("delegates through openai-completions with injected payload and headers", async () => {
 		let capturedModel: Model<"openai-completions"> | undefined;
 		let capturedOptions: SimpleStreamOptions | undefined;
+		const runtimeConfig: DynamoProviderRuntimeConfig = { ...config };
 
 		const streamSimple = createDynamoStreamSimple(
-			config,
+			runtimeConfig,
 			(openAIModel, _context, options) => {
 				capturedModel = openAIModel;
 				capturedOptions = options;
@@ -311,6 +313,7 @@ describe("streamSimple wrapper", () => {
 
 		expect(capturedModel?.api).toBe("openai-completions");
 		expect(capturedModel?.provider).toBe("dynamo");
+		expect(runtimeConfig.sessionId).toBe("pi-session");
 		expect(capturedOptions?.apiKey).toBe("test-key");
 		expect(capturedOptions?.headers).toEqual({ "x-request-id": "request-1" });
 		expect(injectedPayload).toEqual({
@@ -408,6 +411,30 @@ describe("subagent trajectory context", () => {
 			},
 		});
 		expect((calls[0]?.headers as Record<string, string>)["x-request-id"]).toBe("close-req-1");
+	});
+
+	it("reuses Pi's runtime session id for subagent trajectory_final", async () => {
+		const calls: Array<{ body: any }> = [];
+		const cfg = readDynamoConfig({ ...subagentEnv, DYN_REQUEST_TRACE: "1" });
+		const streamSimple = createDynamoStreamSimple(
+			cfg,
+			(_model, _context, _options) => createAssistantMessageEventStream(),
+			() => "request-1",
+		);
+		streamSimple(model, context, { sessionId: "pi-child-session" });
+
+		const fakeFetch = async (_url: string, init: RequestInit) => {
+			calls.push({ body: JSON.parse(String(init.body)) });
+			return { ok: true, status: 200 };
+		};
+
+		expect(await sendTrajectoryFinal(cfg, "zai-org/GLM-4.7-Flash", () => "close-req-1", fakeFetch)).toBe(true);
+		expect(calls[0]?.body.nvext.agent_context).toMatchObject({
+			trajectory_id: "run-1:scout:3",
+			parent_trajectory_id: "orchestrator",
+			session_id: "pi-child-session",
+			trajectory_final: true,
+		});
 	});
 
 	it("streamSimple injects subagent agent_context without session_control", async () => {

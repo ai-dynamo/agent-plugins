@@ -346,6 +346,7 @@ export async function sendTrajectoryFinal(
 ): Promise<boolean> {
 	const agentContext = { ...buildDynamoAgentContext(config), trajectory_final: true };
 	if (!agentContext.trajectory_id) return false;
+	const finalModelId = modelId.trim() || DEFAULT_DYNAMO_MODEL_ID;
 	try {
 		const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
 			method: "POST",
@@ -355,7 +356,7 @@ export async function sendTrajectoryFinal(
 				"x-request-id": createRequestId(),
 			},
 			body: JSON.stringify({
-				model: modelId,
+				model: finalModelId,
 				messages: [{ role: "user", content: "." }],
 				max_tokens: 1,
 				stream: false,
@@ -375,6 +376,10 @@ export function createDynamoStreamSimple(
 	createRequestId: () => string = randomUUID,
 ): ProviderStreamSimple {
 	return (model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
+		const runtimeSessionId = options?.sessionId?.trim();
+		if (!config.sessionId && runtimeSessionId) {
+			config.sessionId = runtimeSessionId;
+		}
 		const openAIModel = toOpenAICompletionsModel(model);
 		const headers = buildDynamoHeaders(options?.headers, createRequestId);
 		const baseOptions: SimpleStreamOptions = {
