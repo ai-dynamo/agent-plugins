@@ -7,18 +7,18 @@ import {
 	applySubagentBridge,
 	buildDynamoAgentContext,
 	buildDynamoHeaders,
+	computeSubagentTrajectoryId,
 	computeSubagentTrajectoryRewrite,
 	createDynamoStreamSimple,
 	DEFAULT_DYNAMO_BASE_URL,
 	DEFAULT_DYNAMO_MODEL_ID,
 	DEFAULT_SESSION_TYPE_ID,
 	DYNAMO_API,
-	DynamoSubagentSession,
 	mergeDynamoAgentContext,
-	mergeDynamoSessionControl,
 	normalizeDynamoBaseUrl,
 	readDynamoConfig,
 	seedRootTrajectory,
+	sendTrajectoryFinal,
 } from "../src/dynamo-provider.js";
 
 // Spread `base` with the given keys dropped (env-absent). Avoids the
@@ -36,6 +36,7 @@ const config = {
 	apiKey: "test-key",
 	traceEnabled: true,
 	sessionTypeId: DEFAULT_SESSION_TYPE_ID,
+	isSubagent: false,
 };
 
 const model = {
@@ -67,7 +68,7 @@ describe("dynamo provider config", () => {
 				OPENAI_BASE_URL: "http://ignored.test/v1",
 				DYNAMO_BASE_URL: "http://dynamo.test",
 				DYNAMO_API_KEY: "dyn-key",
-				DYN_AGENT_TRACE: "1",
+				DYN_REQUEST_TRACE: "1",
 				DYN_AGENT_SESSION_TYPE_ID: "session-kind",
 				DYN_AGENT_SESSION_ID: "session-id",
 				DYN_AGENT_TRAJECTORY_ID: "trajectory-id",
@@ -81,16 +82,17 @@ describe("dynamo provider config", () => {
 			sessionId: "session-id",
 			trajectoryId: "trajectory-id",
 			parentTrajectoryId: "parent-id",
+			isSubagent: false,
 		});
 	});
 
-	it("treats DYN_AGENT_TRACE as a truthy master switch, default off", () => {
+	it("treats DYN_REQUEST_TRACE as a truthy master switch, default off", () => {
 		expect(readDynamoConfig({}).traceEnabled).toBe(false);
 		for (const v of ["1", "true", "TRUE", "yes", "on"]) {
-			expect(readDynamoConfig({ DYN_AGENT_TRACE: v }).traceEnabled).toBe(true);
+			expect(readDynamoConfig({ DYN_REQUEST_TRACE: v }).traceEnabled).toBe(true);
 		}
 		for (const v of ["0", "false", "no", ""]) {
-			expect(readDynamoConfig({ DYN_AGENT_TRACE: v }).traceEnabled).toBe(false);
+			expect(readDynamoConfig({ DYN_REQUEST_TRACE: v }).traceEnabled).toBe(false);
 		}
 	});
 });
@@ -123,14 +125,19 @@ describe("pi-subagents trajectory bridge", () => {
 		expect(computeSubagentTrajectoryRewrite(envWithout(childEnv, "PI_SUBAGENT_CHILD"))).toBeNull();
 	});
 
-	it("does NOT override an explicit DYN_AGENT_PARENT_TRAJECTORY_ID (manual wins)", () => {
+	it("uses an explicit DYN_AGENT_PARENT_TRAJECTORY_ID when present (manual wins)", () => {
 		expect(
 			computeSubagentTrajectoryRewrite({ ...childEnv, DYN_AGENT_PARENT_TRAJECTORY_ID: "manual-parent" }),
-		).toBeNull();
+		).toEqual({
+			parentTrajectoryId: "manual-parent",
+			trajectoryId: "run-1:researcher:2",
+		});
 	});
 
-	it("skips when inherited DYN_AGENT_TRAJECTORY_ID is absent", () => {
-		expect(computeSubagentTrajectoryRewrite(envWithout(childEnv, "DYN_AGENT_TRAJECTORY_ID"))).toBeNull();
+	it("still creates a child trajectory when inherited DYN_AGENT_TRAJECTORY_ID is absent", () => {
+		expect(computeSubagentTrajectoryRewrite(envWithout(childEnv, "DYN_AGENT_TRAJECTORY_ID"))).toEqual({
+			trajectoryId: "run-1:researcher:2",
+		});
 	});
 
 	it("skips when PI_SUBAGENT_RUN_ID or PI_SUBAGENT_CHILD_AGENT is missing", () => {
@@ -142,6 +149,7 @@ describe("pi-subagents trajectory bridge", () => {
 		const cfg = readDynamoConfig(childEnv);
 		expect(cfg.trajectoryId).toBe("run-1:researcher:2");
 		expect(cfg.parentTrajectoryId).toBe("parent-traj");
+		expect(cfg.isSubagent).toBe(true);
 	});
 
 	it("applySubagentBridge mutates process.env so nested spawns chain correctly", () => {
@@ -172,7 +180,7 @@ describe("pi-subagents trajectory bridge", () => {
 
 describe("root trajectory seed", () => {
 	it("seeds DYN_AGENT_TRAJECTORY_ID at the root so subagents inherit a parent", () => {
-		const env: NodeJS.ProcessEnv = { DYN_AGENT_TRACE: "1" };
+		const env: NodeJS.ProcessEnv = { DYN_REQUEST_TRACE: "1" };
 		expect(seedRootTrajectory(env, () => "root-traj")).toBe(true);
 		expect(env.DYN_AGENT_TRAJECTORY_ID).toBe("root-traj");
 		// The bug fix: a subagent spawned from this env now resolves a parent.
@@ -189,15 +197,15 @@ describe("root trajectory seed", () => {
 	});
 
 	it("uses DYN_AGENT_SESSION_ID as the root trajectory when present", () => {
-		const env: NodeJS.ProcessEnv = { DYN_AGENT_TRACE: "1", DYN_AGENT_SESSION_ID: "sess-7" };
+		const env: NodeJS.ProcessEnv = { DYN_REQUEST_TRACE: "1", DYN_AGENT_SESSION_ID: "sess-7" };
 		expect(seedRootTrajectory(env, () => "unused")).toBe(true);
 		expect(env.DYN_AGENT_TRAJECTORY_ID).toBe("sess-7");
 	});
 
 	it("no-ops when trace is off, in a subagent child, or trajectory already set", () => {
 		expect(seedRootTrajectory({}, () => "x")).toBe(false);
-		expect(seedRootTrajectory({ DYN_AGENT_TRACE: "1", PI_SUBAGENT_CHILD: "1" }, () => "x")).toBe(false);
-		const preset: NodeJS.ProcessEnv = { DYN_AGENT_TRACE: "1", DYN_AGENT_TRAJECTORY_ID: "caller" };
+		expect(seedRootTrajectory({ DYN_REQUEST_TRACE: "1", PI_SUBAGENT_CHILD: "1" }, () => "x")).toBe(false);
+		const preset: NodeJS.ProcessEnv = { DYN_REQUEST_TRACE: "1", DYN_AGENT_TRAJECTORY_ID: "caller" };
 		expect(seedRootTrajectory(preset, () => "x")).toBe(false);
 		expect(preset.DYN_AGENT_TRAJECTORY_ID).toBe("caller");
 	});
@@ -318,7 +326,7 @@ describe("streamSimple wrapper", () => {
 		});
 	});
 
-	it("injects nothing when DYN_AGENT_TRACE is off (plain provider), but still sets x-request-id", async () => {
+	it("injects nothing when DYN_REQUEST_TRACE is off (plain provider), but still sets x-request-id", async () => {
 		let capturedOptions: SimpleStreamOptions | undefined;
 		const streamSimple = createDynamoStreamSimple(
 			{ ...config, traceEnabled: false },
@@ -337,7 +345,7 @@ describe("streamSimple wrapper", () => {
 	});
 });
 
-describe("subagent session control", () => {
+describe("subagent trajectory context", () => {
 	const subagentEnv = {
 		DYNAMO_BASE_URL: "http://dynamo.test",
 		DYN_AGENT_TRAJECTORY_ID: "orchestrator",
@@ -347,74 +355,28 @@ describe("subagent session control", () => {
 		PI_SUBAGENT_CHILD_INDEX: "3",
 	} as const;
 
-	it("sets sessionControlId only for a pi-subagents child", () => {
-		expect(readDynamoConfig(subagentEnv).sessionControlId).toBe("run-1:scout:3");
-		// Lead agent (no subagent bookkeeping) stays unpinned.
+	it("sets child trajectory only for a pi-subagents child", () => {
+		expect(computeSubagentTrajectoryId(subagentEnv)).toBe("run-1:scout:3");
 		const { PI_SUBAGENT_CHILD: _omit, ...leadEnv } = subagentEnv;
-		expect(readDynamoConfig(leadEnv).sessionControlId).toBeUndefined();
+		expect(computeSubagentTrajectoryId(leadEnv)).toBeUndefined();
 	});
 
-	it("derives sessionControlId from PI_SUBAGENT_* alone — no DYN_AGENT_TRAJECTORY_ID needed", () => {
-		// Decoupled from the trajectory bridge: a subagent gets KV isolation even
-		// when no trajectory lineage was set up by the operator.
+	it("derives child trajectory from PI_SUBAGENT_* alone", () => {
 		const noTrajectory = envWithout(subagentEnv, "DYN_AGENT_TRAJECTORY_ID");
 		const cfg = readDynamoConfig(noTrajectory);
-		expect(cfg.sessionControlId).toBe("run-1:scout:3");
-		expect(cfg.trajectoryId).toBeUndefined();
+		expect(cfg.trajectoryId).toBe("run-1:scout:3");
 		expect(cfg.parentTrajectoryId).toBeUndefined();
+		expect(cfg.isSubagent).toBe(true);
 	});
 
 	it("requires a complete subagent identity (run id + agent name)", () => {
-		expect(readDynamoConfig(envWithout(subagentEnv, "PI_SUBAGENT_RUN_ID")).sessionControlId).toBeUndefined();
-		expect(readDynamoConfig(envWithout(subagentEnv, "PI_SUBAGENT_CHILD_AGENT")).sessionControlId).toBeUndefined();
+		expect(computeSubagentTrajectoryId(envWithout(subagentEnv, "PI_SUBAGENT_RUN_ID"))).toBeUndefined();
+		expect(computeSubagentTrajectoryId(envWithout(subagentEnv, "PI_SUBAGENT_CHILD_AGENT"))).toBeUndefined();
 		// Index defaults to 0 when absent.
-		expect(readDynamoConfig(envWithout(subagentEnv, "PI_SUBAGENT_CHILD_INDEX")).sessionControlId).toBe("run-1:scout:0");
+		expect(computeSubagentTrajectoryId(envWithout(subagentEnv, "PI_SUBAGENT_CHILD_INDEX"))).toBe("run-1:scout:0");
 	});
 
-	it("parses DYN_AGENT_SESSION_TIMEOUT, ignoring non-positive values", () => {
-		expect(readDynamoConfig({ ...subagentEnv, DYN_AGENT_SESSION_TIMEOUT: "60" }).sessionTimeoutSecs).toBe(60);
-		expect(readDynamoConfig({ ...subagentEnv, DYN_AGENT_SESSION_TIMEOUT: "0" }).sessionTimeoutSecs).toBeUndefined();
-		expect(readDynamoConfig({ ...subagentEnv, DYN_AGENT_SESSION_TIMEOUT: "junk" }).sessionTimeoutSecs).toBeUndefined();
-		expect(readDynamoConfig(subagentEnv).sessionTimeoutSecs).toBeUndefined();
-	});
-
-	it("opens on the first turn then goes sticky, carrying the timeout when set", () => {
-		const session = new DynamoSubagentSession({
-			baseUrl: "http://dynamo.test/v1",
-			apiKey: "k",
-			sessionControlId: "run-1:scout:3",
-			sessionTimeoutSecs: 60,
-		});
-		expect(session.controlForTurn()).toEqual({ session_id: "run-1:scout:3", timeout: 60 });
-		expect(session.controlForTurn()).toEqual({ session_id: "run-1:scout:3", timeout: 60 });
-		expect(session.controlForTurn()).toEqual({ session_id: "run-1:scout:3", timeout: 60 });
-	});
-
-	it("omits the timeout field when no override is configured", () => {
-		const session = new DynamoSubagentSession({
-			baseUrl: "http://dynamo.test/v1",
-			apiKey: "k",
-			sessionControlId: "sess-1",
-		});
-		expect(session.controlForTurn()).toEqual({ session_id: "sess-1" });
-	});
-
-	it("merges nvext.session_control without dropping existing nvext fields", () => {
-		const payload = mergeDynamoSessionControl(
-			{ model: "demo", nvext: { extra_fields: ["worker_id"], agent_context: { phase: "reasoning" } } },
-			{ session_id: "sess-1", timeout: 60 },
-		);
-		expect(payload).toEqual({
-			model: "demo",
-			nvext: {
-				extra_fields: ["worker_id"],
-				agent_context: { phase: "reasoning" },
-				session_control: { session_id: "sess-1", timeout: 60 },
-			},
-		});
-	});
-
-	it("close fires a throwaway action:close request, is idempotent, and skips before any turn", async () => {
+	it("trajectory_final sends agent_context only", async () => {
 		const calls: Array<{ url: string; body: unknown; headers: unknown }> = [];
 		const fakeFetch = async (url: string, init: RequestInit) => {
 			calls.push({
@@ -425,20 +387,8 @@ describe("subagent session control", () => {
 			return { ok: true, status: 200 };
 		};
 
-		const session = new DynamoSubagentSession(
-			{ baseUrl: "http://dynamo.test/v1", apiKey: "k", sessionControlId: "sess-1" },
-			() => "close-req-1",
-		);
-
-		// No turn has tagged the session yet: close is a no-op.
-		expect(await session.close(fakeFetch)).toBe(false);
-		expect(calls).toHaveLength(0);
-
-		session.controlForTurn(); // first tagged turn
-		session.modelId = "zai-org/GLM-4.7-Flash";
-
-		expect(await session.close(fakeFetch)).toBe(true);
-		expect(await session.close(fakeFetch)).toBe(false); // idempotent
+		const cfg = readDynamoConfig({ ...subagentEnv, DYN_REQUEST_TRACE: "1", DYN_AGENT_SESSION_ID: "run-1" });
+		expect(await sendTrajectoryFinal(cfg, "zai-org/GLM-4.7-Flash", () => "close-req-1", fakeFetch)).toBe(true);
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.url).toBe("http://dynamo.test/v1/chat/completions");
 		expect(calls[0]?.body).toEqual({
@@ -446,57 +396,46 @@ describe("subagent session control", () => {
 			messages: [{ role: "user", content: "." }],
 			max_tokens: 1,
 			stream: false,
-			nvext: { session_control: { session_id: "sess-1", action: "close" } },
+			nvext: {
+				agent_context: {
+					trajectory_id: "run-1:scout:3",
+					parent_trajectory_id: "orchestrator",
+					session_id: "run-1",
+					session_type_id: DEFAULT_SESSION_TYPE_ID,
+					phase: "reasoning",
+					trajectory_final: true,
+				},
+			},
 		});
 		expect((calls[0]?.headers as Record<string, string>)["x-request-id"]).toBe("close-req-1");
 	});
 
-	it("re-arms on the next turn after a close (multi-prompt subagent)", async () => {
-		const fakeFetch = async () => ({ ok: true, status: 200 });
-		const session = new DynamoSubagentSession({
-			baseUrl: "http://dynamo.test/v1",
-			apiKey: "k",
-			sessionControlId: "sess-1",
-		});
-
-		expect(session.controlForTurn()).toEqual({ session_id: "sess-1" });
-		expect(session.controlForTurn()).toEqual({ session_id: "sess-1" });
-		expect(await session.close(fakeFetch)).toBe(true);
-		// A later prompt's first turn re-tags the session; close fires again.
-		expect(session.controlForTurn()).toEqual({ session_id: "sess-1" });
-		expect(await session.close(fakeFetch)).toBe(true);
-	});
-
-	it("streamSimple injects session_control alongside agent_context", async () => {
+	it("streamSimple injects subagent agent_context without session_control", async () => {
 		let capturedOptions: SimpleStreamOptions | undefined;
-		const session = new DynamoSubagentSession({
-			baseUrl: "http://dynamo.test/v1",
-			apiKey: "k",
-			sessionControlId: "run-1:scout:3",
-			sessionTimeoutSecs: 60,
-		});
+		const subagentConfig = readDynamoConfig({ ...subagentEnv, DYN_REQUEST_TRACE: "1", DYN_AGENT_SESSION_ID: "run-1" });
 		const streamSimple = createDynamoStreamSimple(
-			config,
+			subagentConfig,
 			(_model, _context, options) => {
 				capturedOptions = options;
 				return createAssistantMessageEventStream();
 			},
 			() => "request-1",
-			session,
 		);
 
 		streamSimple(model, context, { sessionId: "pi-session" });
 		const onPayload = capturedOptions?.onPayload;
 		if (!onPayload) throw new Error("expected wrapped onPayload");
 		const injected = (await onPayload({ model: DEFAULT_DYNAMO_MODEL_ID }, model)) as {
-			nvext: { agent_context: unknown; session_control: unknown };
+			nvext: { agent_context: unknown; session_control?: unknown };
 		};
 
-		expect(injected.nvext.agent_context).toMatchObject({ phase: "reasoning" });
-		expect(injected.nvext.session_control).toEqual({
-			session_id: "run-1:scout:3",
-			timeout: 60,
+		expect(injected.nvext.agent_context).toEqual({
+			trajectory_id: "run-1:scout:3",
+			parent_trajectory_id: "orchestrator",
+			session_id: "run-1",
+			session_type_id: DEFAULT_SESSION_TYPE_ID,
+			phase: "reasoning",
 		});
-		expect(session.modelId).toBe(DEFAULT_DYNAMO_MODEL_ID);
+		expect(injected.nvext.session_control).toBeUndefined();
 	});
 });

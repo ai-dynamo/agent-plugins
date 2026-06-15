@@ -3,7 +3,7 @@
 
 // Integration smoke test: spins up a Dynamo frontend + mocker, sends one chat
 // completion through pi-dynamo-provider's streamSimple wrapper, and asserts
-// that nvext.agent_context fields round-trip into the JSONL agent trace.
+// that nvext.agent_context fields round-trip into the JSONL request trace.
 //
 // Not a unit test — runs out-of-band of vitest. Driven by
 // scripts/integration-smoke.sh which boots Dynamo, exports the trace sink env
@@ -28,7 +28,7 @@ import {
 	readDynamoConfig,
 } from "../../dist/dynamo-provider.js";
 
-const TRACE_PATH = mustEnv("DYN_AGENT_TRACE_OUTPUT_PATH");
+const TRACE_PATH = mustEnv("DYN_REQUEST_TRACE_OUTPUT_PATH");
 const BASE_URL = mustEnv("DYNAMO_BASE_URL");
 const MODEL_ID = mustEnv("DYNAMO_TEST_MODEL_ID");
 

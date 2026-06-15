@@ -45,7 +45,7 @@ Environment overrides:
   TP
   DYN_HTTP_PORT
   DYN_SYSTEM_PORT
-  DYN_AGENT_TRACE_OUTPUT_PATH
+  DYN_REQUEST_TRACE_OUTPUT_PATH
 
 Examples:
   scripts/launch-agg-agent.sh
@@ -141,7 +141,7 @@ DYNAMO_DIR="${DYNAMO_DIR:-$WORKDIR/dynamo}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$WORKDIR/runs/$RUN_ID"
 LOG_DIR="$RUN_DIR/logs"
-TRACE_PATH="${DYN_AGENT_TRACE_OUTPUT_PATH:-$RUN_DIR/dynamo-agent-trace.jsonl}"
+TRACE_PATH="${DYN_REQUEST_TRACE_OUTPUT_PATH:-$RUN_DIR/dynamo-request-trace.jsonl}"
 FILE_KV="${DYN_FILE_KV:-$RUN_DIR/file-kv}"
 CHILD_PIDS=()
 
@@ -164,7 +164,7 @@ Pi environment for another shell:
   export DYNAMO_API_KEY=dummy
   export DYN_AGENT_SESSION_TYPE_ID=pi_coding_agent
   export DYN_AGENT_SESSION_ID=pi-demo-${RUN_ID}
-  export DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390
+  export DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390
 
 Example Pi command:
 
@@ -182,7 +182,7 @@ Perfetto conversion:
     ${TRACE_PATH} \\
     --include-markers \\
     --separate-stage-tracks \\
-    --output ${RUN_DIR}/dynamo-agent-trace.perfetto.json
+    --output ${RUN_DIR}/dynamo-request-trace.perfetto.json
 
 EOF
 }
@@ -219,10 +219,10 @@ export DYN_DISCOVERY_BACKEND=file
 export DYN_REQUEST_PLANE=tcp
 export DYN_EVENT_PLANE=zmq
 export DYN_FILE_KV="$FILE_KV"
-export DYN_AGENT_TRACE=1
-export DYN_AGENT_TRACE_SINKS="${DYN_AGENT_TRACE_SINKS:-jsonl}"
-export DYN_AGENT_TRACE_OUTPUT_PATH="$TRACE_PATH"
-export DYN_AGENT_TRACE_JSONL_FLUSH_INTERVAL_MS="${DYN_AGENT_TRACE_JSONL_FLUSH_INTERVAL_MS:-100}"
+export DYN_REQUEST_TRACE=1
+export DYN_REQUEST_TRACE_SINKS="${DYN_REQUEST_TRACE_SINKS:-jsonl}"
+export DYN_REQUEST_TRACE_OUTPUT_PATH="$TRACE_PATH"
+export DYN_REQUEST_TRACE_JSONL_FLUSH_INTERVAL_MS="${DYN_REQUEST_TRACE_JSONL_FLUSH_INTERVAL_MS:-100}"
 export DYN_LOG="${DYN_LOG:-info}"
 
 log "Run directory: $RUN_DIR"
@@ -241,10 +241,12 @@ python3 -m dynamo.frontend \
     --discovery-backend file \
     --request-plane tcp \
     --event-plane zmq \
-    --router-mode round-robin \
+    --router-mode kv \
+    --kv-cache-block-size 16 \
     >"$LOG_DIR/frontend.log" 2>&1 &
 CHILD_PIDS+=("$!")
 
+KV_EVENTS_CONFIG='{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:5557","enable_kv_cache_events":true}'
 log "Starting Dynamo SGLang worker"
 DYN_SYSTEM_PORT="$SYSTEM_PORT" \
 python3 -m dynamo.sglang \
@@ -256,8 +258,8 @@ python3 -m dynamo.sglang \
     --page-size 16 \
     --tp "$TP" \
     --trust-remote-code \
-    --enable-streaming-session \
-    --skip-tokenizer-init \
+    --enable-session-radix-cache \
+    --kv-events-config "$KV_EVENTS_CONFIG" \
     --dyn-reasoning-parser glm45 \
     --dyn-tool-call-parser glm47 \
     --enable-metrics \

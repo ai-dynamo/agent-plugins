@@ -8,8 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 Pi extension registering a `dynamo` provider for Dynamo's OpenAI-compatible chat-completions endpoint. Three source files in `src/` (~650 lines total):
 
 - `index.ts` — extension entrypoint; calls `readDynamoConfig`, discovers models via `/v1/models`, registers the provider, wires the tool-event relay.
-- `dynamo-provider.ts` — config + agent_context construction + streamSimple wrapper + subagent `session_control`. Reads `DYN_AGENT_*` and `PI_SUBAGENT_*` env vars. Gated by the `DYN_AGENT_TRACE` master switch: when set, emits `nvext.agent_context` on every LLM request and drives subagent KV sessions; when unset, registers a plain `dynamo/<model>` provider.
-- `tool-relay.ts` — ZMQ PUSH publisher for Pi tool events. Connects to a Dynamo-bound PULL endpoint. Wire format: `[topic, seq_be_u64, msgpack(AgentTraceRecord)]`.
+- `dynamo-provider.ts` — config + agent_context construction + streamSimple wrapper. Reads `DYN_REQUEST_TRACE`, `DYN_AGENT_*`, and `PI_SUBAGENT_*` env vars. Gated by the `DYN_REQUEST_TRACE` master switch: when set, emits `nvext.agent_context` on every LLM request and sends `trajectory_final` at trajectory end; when unset, registers a plain `dynamo/<model>` provider.
+- `tool-relay.ts` — ZMQ PUSH publisher for Pi tool events. Connects to a Dynamo-bound PULL endpoint. Wire format: `[topic, seq_be_u64, msgpack(RequestTraceRecord)]`.
 
 ## Build, test, check
 
@@ -22,7 +22,7 @@ npm run build     # tsc -p tsconfig.build.json → dist/
 
 Tests live in `test/` as siblings of `src/`. Use vitest's `describe`/`it`/`expect`. Mirror the existing structure: one test file per source file, fixture data inline rather than separate fixture files.
 
-`test/integration/smoke.mjs` is the out-of-band end-to-end check — driven by `scripts/integration-smoke.sh`, not vitest. It boots Dynamo's frontend + mocker, sends one real chat completion, and asserts `nvext.agent_context` round-trips into the trace JSONL. Two cases: top-level agent_context and the pi-subagents bridge. Mocker output is garbage; assertions only target the trace envelope. CI clones `ai-dynamo/dynamo@main` and builds from source — published wheels lag behind the agent trace sink surface, so the wheel path can't actually exercise this package. Cargo cache keeps warm runs ~60-90s, cold ~10 min. `workflow_dispatch` accepts a `dynamo_ref` input for ad-hoc validation against a specific branch, tag, or SHA.
+`test/integration/smoke.mjs` is the out-of-band end-to-end check — driven by `scripts/integration-smoke.sh`, not vitest. It boots Dynamo's frontend + mocker, sends one real chat completion, and asserts `nvext.agent_context` round-trips into the request trace JSONL. Two cases: top-level agent_context and the pi-subagents bridge. Mocker output is garbage; assertions only target the trace envelope. CI clones `ai-dynamo/dynamo@main` and builds from source. Cargo cache keeps warm runs ~60-90s, cold ~10 min. `workflow_dispatch` accepts a `dynamo_ref` input for ad-hoc validation against a specific branch, tag, or SHA.
 
 ## Coding standards
 
@@ -47,7 +47,8 @@ Tests live in `test/` as siblings of `src/`. Use vitest's `describe`/`it`/`expec
 | Prefix | Direction | Examples |
 |---|---|---|
 | `DYNAMO_*` | client config (we read) | `DYNAMO_BASE_URL`, `DYNAMO_API_KEY` |
-| `DYN_AGENT_*` | dynamo agent context (we read + emit) | `DYN_AGENT_SESSION_ID`, `DYN_AGENT_TRAJECTORY_ID`, `DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT` |
+| `DYN_AGENT_*` | dynamo agent context (we read + emit) | `DYN_AGENT_SESSION_ID`, `DYN_AGENT_TRAJECTORY_ID` |
+| `DYN_REQUEST_TRACE*` | request trace switch and tool bridge | `DYN_REQUEST_TRACE`, `DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` |
 | `PI_SUBAGENT_*` | pi-subagents bookkeeping (we read only) | `PI_SUBAGENT_CHILD`, `PI_SUBAGENT_RUN_ID`, `PI_SUBAGENT_CHILD_AGENT`, `PI_SUBAGENT_CHILD_INDEX` |
 | `OPENAI_BASE_URL` | OpenAI-compatibility fallback (we read) | only consulted when `DYNAMO_BASE_URL` is unset |
 
@@ -70,5 +71,5 @@ External contributions are not currently accepted. This is an NVIDIA-internal co
 
 - The `nvext.agent_context` schema field names match ATIF (`session_type_id`, `session_id`, `trajectory_id`, `parent_trajectory_id`). Don't rename them — downstream tooling in Dynamo's converter and benchmark stack joins on these.
 - The `phase: "reasoning"` field is deliberately hardcoded; it tags the LLM call as an agent reasoning step (vs. e.g. a synthesis or grading step). Adding other phase values requires Dynamo-side coordination.
-- The `agent_trace.v1` schema is owned upstream by Dynamo (`dynamo/lib/llm/src/agents/trace/`). Don't change record shapes here without an upstream PR landing first.
+- The `request.trace.v1` schema is owned upstream by Dynamo (`dynamo/lib/llm/src/request_trace/`). Don't change record shapes here without an upstream PR landing first.
 - `package-lock.json` churn from npm version differences should be reverted before committing (`git checkout -- package-lock.json` if a no-op edit appears).
