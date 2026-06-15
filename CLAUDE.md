@@ -24,6 +24,8 @@ Tests live in `test/` as siblings of `src/`. Use vitest's `describe`/`it`/`expec
 
 `test/integration/smoke.mjs` is the out-of-band end-to-end check — driven by `scripts/integration-smoke.sh`, not vitest. It boots Dynamo's frontend + mocker, sends one real chat completion, and asserts `nvext.agent_context` round-trips into the request trace JSONL. Two cases: top-level agent_context and the pi-subagents bridge. Mocker output is garbage; assertions only target the trace envelope. CI clones `ai-dynamo/dynamo@main` and builds from source. Cargo cache keeps warm runs ~60-90s, cold ~10 min. `workflow_dispatch` accepts a `dynamo_ref` input for ad-hoc validation against a specific branch, tag, or SHA.
 
+For real Pi CLI lifecycle validation against a Dynamo endpoint, read `skills/pi-headless-dynamo/SKILL.md` first and drive the actual interactive Pi TUI instead of faking provider requests or pi-subagents env.
+
 ## Coding standards
 
 - TypeScript strict mode. Don't add `any`; prefer `unknown` + narrow.
