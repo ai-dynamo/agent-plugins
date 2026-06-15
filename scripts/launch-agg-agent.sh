@@ -162,6 +162,7 @@ Pi environment for another shell:
 
   export DYNAMO_BASE_URL=http://127.0.0.1:${HTTP_PORT}/v1
   export DYNAMO_API_KEY=dummy
+  export DYN_REQUEST_TRACE=1
   export DYN_AGENT_SESSION_TYPE_ID=pi_coding_agent
   export DYN_AGENT_SESSION_ID=pi-demo-${RUN_ID}
   export DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT=tcp://127.0.0.1:20390
