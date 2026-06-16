@@ -6,13 +6,13 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_DYNAMO_BASE_URL, DEFAULT_SESSION_TYPE_ID } from "../src/dynamo-provider.js";
 import {
-	buildDynamoTraceAgentContext,
+	buildDynamoRequestTraceAgentContext,
 	DEFAULT_TOOL_EVENT_QUEUE_CAPACITY,
 	DynamoToolEventPublisher,
 	DynamoToolEventRelay,
 	getToolClass,
 	readDynamoToolRelayConfig,
-	type DynamoAgentTraceRecord,
+	type DynamoRequestTraceRecord,
 	type ToolEventSocket,
 } from "../src/tool-relay.js";
 
@@ -49,16 +49,16 @@ function createContext(sessionId: string): ExtensionContext {
 	} as unknown as ExtensionContext;
 }
 
-function decodeTraceRecord(frame: Buffer): DynamoAgentTraceRecord {
-	return decode(frame) as DynamoAgentTraceRecord;
+function decodeTraceRecord(frame: Buffer): DynamoRequestTraceRecord {
+	return decode(frame) as DynamoRequestTraceRecord;
 }
 
 describe("tool relay config", () => {
 	it("reads Dynamo tool relay env aliases", () => {
 		expect(
 			readDynamoToolRelayConfig({
-				DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT: "tcp://127.0.0.1:20390",
-				DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_TOPIC: "tools",
+				DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT: "tcp://127.0.0.1:20390",
+				DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_TOPIC: "tools",
 			}),
 		).toEqual({
 			endpoint: "tcp://127.0.0.1:20390",
@@ -68,9 +68,9 @@ describe("tool relay config", () => {
 
 		expect(
 			readDynamoToolRelayConfig({
-				DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT: "ipc:///tmp/pi-tools",
-				DYN_AGENT_TOOL_EVENTS_ZMQ_TOPIC: "pi-tools",
-				DYN_AGENT_TOOL_EVENTS_QUEUE_CAPACITY: "7",
+				DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT: "ipc:///tmp/pi-tools",
+				DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_TOPIC: "pi-tools",
+				DYN_REQUEST_TRACE_TOOL_EVENTS_QUEUE_CAPACITY: "7",
 			}),
 		).toEqual({
 			endpoint: "ipc:///tmp/pi-tools",
@@ -82,7 +82,7 @@ describe("tool relay config", () => {
 
 describe("tool relay agent context", () => {
 	it("uses the Pi session ID as default trajectory and session ID", () => {
-		expect(buildDynamoTraceAgentContext(config, "pi-session")).toEqual({
+		expect(buildDynamoRequestTraceAgentContext(config, "pi-session")).toEqual({
 			session_type_id: DEFAULT_SESSION_TYPE_ID,
 			session_id: "pi-session",
 			trajectory_id: "pi-session",
@@ -91,7 +91,7 @@ describe("tool relay agent context", () => {
 
 	it("uses env session/trajectory IDs when provided", () => {
 		expect(
-			buildDynamoTraceAgentContext(
+			buildDynamoRequestTraceAgentContext(
 				{
 					...config,
 					sessionId: "session-1",
@@ -138,7 +138,7 @@ describe("tool relay records", () => {
 		expect(socket.sent[0]?.[0].toString("utf8")).toBe("tools");
 		expect(socket.sent[0]?.[1].readBigUInt64BE()).toBe(0n);
 		expect(decodeTraceRecord(socket.sent[0]?.[2] ?? Buffer.alloc(0))).toEqual({
-			schema: "dynamo.agent.trace.v1",
+			schema: "dynamo.request.trace.v1",
 			event_type: "tool_start",
 			event_time_unix_ms: 1000,
 			event_source: "harness",
@@ -171,7 +171,7 @@ describe("tool relay records", () => {
 		expect(socket.sent).toHaveLength(2);
 		expect(socket.sent[1]?.[1].readBigUInt64BE()).toBe(1n);
 		expect(decodeTraceRecord(socket.sent[1]?.[2] ?? Buffer.alloc(0))).toEqual({
-			schema: "dynamo.agent.trace.v1",
+			schema: "dynamo.request.trace.v1",
 			event_type: "tool_end",
 			event_time_unix_ms: 1500,
 			event_source: "harness",
@@ -213,7 +213,7 @@ describe("tool relay records", () => {
 		await publisher.flush();
 
 		expect(decodeTraceRecord(socket.sent[0]?.[2] ?? Buffer.alloc(0))).toEqual({
-			schema: "dynamo.agent.trace.v1",
+			schema: "dynamo.request.trace.v1",
 			event_type: "tool_error",
 			event_time_unix_ms: 2000,
 			event_source: "harness",

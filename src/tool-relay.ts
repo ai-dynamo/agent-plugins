@@ -11,13 +11,9 @@ export const DEFAULT_TOOL_EVENTS_TOPIC = "agent-tool-events";
 export const DEFAULT_TOOL_EVENT_QUEUE_CAPACITY = 100000;
 
 export interface DynamoToolRelayEnvironment extends DynamoEnvironment {
-	DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT?: string;
-	DYN_AGENT_TRACE_TOOL_ZMQ_ENDPOINT?: string;
-	DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT?: string;
-	DYN_AGENT_TOOL_EVENTS_ZMQ_TOPIC?: string;
-	DYN_AGENT_TRACE_TOOL_ZMQ_TOPIC?: string;
-	DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_TOPIC?: string;
-	DYN_AGENT_TOOL_EVENTS_QUEUE_CAPACITY?: string;
+	DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT?: string;
+	DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_TOPIC?: string;
+	DYN_REQUEST_TRACE_TOOL_EVENTS_QUEUE_CAPACITY?: string;
 }
 
 export interface DynamoToolRelayConfig {
@@ -26,7 +22,7 @@ export interface DynamoToolRelayConfig {
 	queueCapacity: number;
 }
 
-export interface DynamoTraceAgentContext {
+export interface DynamoRequestTraceAgentContext {
 	session_type_id: string;
 	session_id: string;
 	trajectory_id: string;
@@ -36,7 +32,7 @@ export interface DynamoTraceAgentContext {
 export type DynamoToolStatus = "running" | "succeeded" | "error" | "cancelled";
 export type DynamoToolTraceEventType = "tool_start" | "tool_end" | "tool_error";
 
-export interface DynamoAgentToolEvent {
+export interface DynamoRequestTraceToolEvent {
 	tool_call_id: string;
 	tool_class: string;
 	started_at_unix_ms?: number;
@@ -47,13 +43,13 @@ export interface DynamoAgentToolEvent {
 	error_type?: string;
 }
 
-export interface DynamoAgentTraceRecord {
-	schema: "dynamo.agent.trace.v1";
+export interface DynamoRequestTraceRecord {
+	schema: "dynamo.request.trace.v1";
 	event_type: DynamoToolTraceEventType;
 	event_time_unix_ms: number;
 	event_source: "harness";
-	agent_context: DynamoTraceAgentContext;
-	tool: DynamoAgentToolEvent;
+	agent_context: DynamoRequestTraceAgentContext;
+	tool: DynamoRequestTraceToolEvent;
 }
 
 export interface ToolEventSocket {
@@ -78,7 +74,7 @@ export interface PiToolExecutionEndEvent {
 }
 
 interface ToolCallStart {
-	agentContext: DynamoTraceAgentContext;
+	agentContext: DynamoRequestTraceAgentContext;
 	toolName: string;
 	toolClass: string;
 	startedAtUnixMs: number;
@@ -95,17 +91,6 @@ function getEnvValue(env: DynamoToolRelayEnvironment, key: keyof DynamoToolRelay
 	return trimmed ? trimmed : undefined;
 }
 
-function firstEnvValue(
-	env: DynamoToolRelayEnvironment,
-	keys: (keyof DynamoToolRelayEnvironment)[],
-): string | undefined {
-	for (const key of keys) {
-		const value = getEnvValue(env, key);
-		if (value) return value;
-	}
-	return undefined;
-}
-
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
 	if (!value) return fallback;
 	const parsed = Number.parseInt(value, 10);
@@ -113,31 +98,22 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
 }
 
 export function readDynamoToolRelayConfig(env: DynamoToolRelayEnvironment = process.env): DynamoToolRelayConfig {
-	const endpoint = firstEnvValue(env, [
-		"DYN_AGENT_TOOL_EVENTS_ZMQ_ENDPOINT",
-		"DYN_AGENT_TRACE_TOOL_ZMQ_ENDPOINT",
-		"DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT",
-	]);
+	const endpoint = getEnvValue(env, "DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT");
 
 	return {
 		...(endpoint ? { endpoint } : {}),
-		topic:
-			firstEnvValue(env, [
-				"DYN_AGENT_TOOL_EVENTS_ZMQ_TOPIC",
-				"DYN_AGENT_TRACE_TOOL_ZMQ_TOPIC",
-				"DYN_AGENT_TRACE_TOOL_EVENTS_ZMQ_TOPIC",
-			]) ?? DEFAULT_TOOL_EVENTS_TOPIC,
+		topic: getEnvValue(env, "DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_TOPIC") ?? DEFAULT_TOOL_EVENTS_TOPIC,
 		queueCapacity: parsePositiveInteger(
-			getEnvValue(env, "DYN_AGENT_TOOL_EVENTS_QUEUE_CAPACITY"),
+			getEnvValue(env, "DYN_REQUEST_TRACE_TOOL_EVENTS_QUEUE_CAPACITY"),
 			DEFAULT_TOOL_EVENT_QUEUE_CAPACITY,
 		),
 	};
 }
 
-export function buildDynamoTraceAgentContext(
+export function buildDynamoRequestTraceAgentContext(
 	config: DynamoProviderRuntimeConfig,
 	sessionId: string | undefined,
-): DynamoTraceAgentContext | undefined {
+): DynamoRequestTraceAgentContext | undefined {
 	const trajectoryId = config.trajectoryId ?? sessionId;
 	if (!trajectoryId) return undefined;
 
@@ -207,7 +183,7 @@ export class DynamoToolEventPublisher {
 		await this.socket.connect(this.config.endpoint);
 	}
 
-	publish(record: DynamoAgentTraceRecord): boolean {
+	publish(record: DynamoRequestTraceRecord): boolean {
 		if (this.closed || !this.config.endpoint) return false;
 		if (this.queued >= this.config.queueCapacity) return false;
 
@@ -251,7 +227,7 @@ export class DynamoToolEventRelay {
 	) {}
 
 	handleToolExecutionStart(event: PiToolExecutionStartEvent, ctx: ExtensionContext): void {
-		const agentContext = buildDynamoTraceAgentContext(this.config, ctx.sessionManager.getSessionId());
+		const agentContext = buildDynamoRequestTraceAgentContext(this.config, ctx.sessionManager.getSessionId());
 		if (!agentContext) return;
 
 		const startedAtUnixMs = this.nowUnixMs();
@@ -265,7 +241,7 @@ export class DynamoToolEventRelay {
 		});
 
 		this.publisher.publish({
-			schema: "dynamo.agent.trace.v1",
+			schema: "dynamo.request.trace.v1",
 			event_type: "tool_start",
 			event_time_unix_ms: startedAtUnixMs,
 			event_source: "harness",
@@ -285,7 +261,8 @@ export class DynamoToolEventRelay {
 		const start = this.starts.get(event.toolCallId);
 		this.starts.delete(event.toolCallId);
 
-		const agentContext = start?.agentContext ?? buildDynamoTraceAgentContext(this.config, ctx.sessionManager.getSessionId());
+		const agentContext =
+			start?.agentContext ?? buildDynamoRequestTraceAgentContext(this.config, ctx.sessionManager.getSessionId());
 		if (!agentContext) return;
 
 		const startedAtUnixMs = start?.startedAtUnixMs ?? endedAtUnixMs;
@@ -296,7 +273,7 @@ export class DynamoToolEventRelay {
 		const outputBytes = getToolResultOutputBytes(event.result);
 
 		this.publisher.publish({
-			schema: "dynamo.agent.trace.v1",
+			schema: "dynamo.request.trace.v1",
 			event_type: event.isError ? "tool_error" : "tool_end",
 			event_time_unix_ms: endedAtUnixMs,
 			event_source: "harness",

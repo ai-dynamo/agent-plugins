@@ -26,7 +26,7 @@ readonly REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 : "${TRACE_DIR:=$(mktemp -d -t pi-dynamo-smoke-XXXXXX)}"
 : "${DYNAMO_TIMEOUT_SECS:=120}"
 
-readonly TRACE_PATH="${TRACE_DIR}/dynamo-agent-trace.jsonl"
+readonly TRACE_PATH="${TRACE_DIR}/dynamo-request-trace.jsonl"
 readonly FRONTEND_LOG="${TRACE_DIR}/frontend.log"
 readonly MOCKER_LOG="${TRACE_DIR}/mocker.log"
 
@@ -74,10 +74,10 @@ echo "smoke: building pi-dynamo-provider"
 
 # Trace sink config. flush interval kept short so the smoke test doesn't race
 # the writer when reading the JSONL between requests.
-export DYN_AGENT_TRACE=1
-export DYN_AGENT_TRACE_SINKS=jsonl
-export DYN_AGENT_TRACE_OUTPUT_PATH="${TRACE_PATH}"
-export DYN_AGENT_TRACE_JSONL_FLUSH_INTERVAL_MS=100
+export DYN_REQUEST_TRACE=1
+export DYN_REQUEST_TRACE_SINKS=jsonl
+export DYN_REQUEST_TRACE_OUTPUT_PATH="${TRACE_PATH}"
+export DYN_REQUEST_TRACE_JSONL_FLUSH_INTERVAL_MS=100
 
 # Local transport plane — no NATS, no etcd. file-backed discovery + tcp + zmq.
 export DYN_DISCOVERY_BACKEND=file
@@ -121,7 +121,7 @@ fi
 
 export DYNAMO_BASE_URL="http://127.0.0.1:${DYNAMO_FRONTEND_PORT}/v1"
 export DYNAMO_TEST_MODEL_ID
-export DYN_AGENT_TRACE_OUTPUT_PATH
+export DYN_REQUEST_TRACE_OUTPUT_PATH
 
 echo "smoke: running assertions"
 node "${REPO_ROOT}/test/integration/smoke.mjs"

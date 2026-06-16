@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pi Headless Dynamo"
+  short_description: "Drive Pi headlessly against Dynamo like an interactive user."
+  default_prompt: "Drive a Pi CLI session headlessly against a Dynamo endpoint, including subagents and lifecycle trace validation."

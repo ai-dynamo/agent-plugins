@@ -20,7 +20,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/install-dynamo.sh [OPTIONS]
 
-Clone Dynamo, check out the agent trace/replay branch, create a uv venv, build
+Clone Dynamo, check out the request trace/replay branch, create a uv venv, build
 the Python bindings, and install Dynamo into the venv.
 
 Options:
