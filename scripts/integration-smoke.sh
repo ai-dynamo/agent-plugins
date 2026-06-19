@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Start a Dynamo frontend + mocker worker against a known-good Dynamo version,
-# then run test/integration/smoke.mjs which asserts that nvext.agent_context
-# round-trips end-to-end through the trace sink. Tears down processes on exit.
+# then run test/integration/smoke.mjs which asserts that session_id round-trips
+# end-to-end through the trace sink. Tears down processes on exit.
 #
 # Required env:
 #   DYNAMO_TEST_MODEL_ID  HuggingFace model id for the mocker tokenizer

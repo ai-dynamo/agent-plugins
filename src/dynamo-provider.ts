@@ -24,11 +24,10 @@ export interface DynamoEnvironment {
 	DYNAMO_BASE_URL?: string;
 	OPENAI_BASE_URL?: string;
 	DYNAMO_API_KEY?: string;
-	// Master switch for the provider's request-trace emissions. When truthy the
-	// provider injects nvext.agent_context and (if an endpoint is set) the
-	// tool-event relay — all with sensible defaults that the more specific
-	// DYN_AGENT_* / DYNAMO_* vars below override. When unset/falsy the provider
-	// is just a plain `dynamo/<model>` provider.
+	// Master switch for provider request-trace emissions. When truthy the
+	// provider uses Pi's session_id affinity header for LLM requests and enables
+	// the tool-event relay when an endpoint is configured. When unset/falsy the
+	// provider is just a plain `dynamo/<model>` provider.
 	DYN_REQUEST_TRACE?: string;
 	DYN_AGENT_SESSION_TYPE_ID?: string;
 	DYN_AGENT_SESSION_ID?: string;
@@ -48,24 +47,14 @@ export interface DynamoEnvironment {
 export interface DynamoProviderRuntimeConfig {
 	baseUrl: string;
 	apiKey: string;
-	// DYN_REQUEST_TRACE master switch. Gates agent_context and
-	// the tool relay; the model provider itself is registered regardless.
+	// DYN_REQUEST_TRACE master switch. Gates session affinity headers and the
+	// tool relay; the model provider itself is registered regardless.
 	traceEnabled: boolean;
 	sessionTypeId: string;
 	sessionId?: string;
 	trajectoryId?: string;
 	parentTrajectoryId?: string;
 	isSubagent?: boolean;
-}
-
-export interface DynamoAgentContext {
-	trajectory_id?: string;
-	parent_trajectory_id?: string;
-	session_id?: string;
-	session_type_id: string;
-	phase: "reasoning";
-	// Terminal marker: the thunderagent_router releases the program when set.
-	trajectory_final?: boolean;
 }
 
 interface OpenAIModelsResponse {
@@ -175,28 +164,6 @@ export function applySubagentBridge(env: NodeJS.ProcessEnv = process.env): boole
 	return true;
 }
 
-/**
- * Seed a root trajectory id so spawned pi-subagents have a parent to inherit.
- * `applySubagentBridge` only fires when a child inherits a non-empty
- * `DYN_AGENT_TRAJECTORY_ID`; if the root never sets one, the first generation of
- * subagents inherits nothing, the bridge no-ops, and the whole chain stays flat
- * (no `parent_trajectory_id`). Only the ROOT seeds — a pi-subagents child already
- * inherits its parent's id, and a caller-set id wins. Uses `DYN_AGENT_SESSION_ID`
- * when present (root trajectory == its session) else a fresh id. Gated on
- * `DYN_REQUEST_TRACE`. Mutates env in place; must run before any subagent spawn.
- * Returns whether a seed was written.
- */
-export function seedRootTrajectory(
-	env: NodeJS.ProcessEnv = process.env,
-	mkId: () => string = randomUUID,
-): boolean {
-	if (!isTruthyEnv(getEnvValue(env, "DYN_REQUEST_TRACE"))) return false;
-	if (getEnvValue(env, "PI_SUBAGENT_CHILD") === "1") return false;
-	if (getEnvValue(env, "DYN_AGENT_TRAJECTORY_ID")) return false;
-	env.DYN_AGENT_TRAJECTORY_ID = getEnvValue(env, "DYN_AGENT_SESSION_ID") ?? mkId();
-	return true;
-}
-
 export function readDynamoConfig(env: DynamoEnvironment = process.env): DynamoProviderRuntimeConfig {
 	const rewrite = computeSubagentTrajectoryRewrite(env);
 	const sessionId = getEnvValue(env, "DYN_AGENT_SESSION_ID");
@@ -213,45 +180,6 @@ export function readDynamoConfig(env: DynamoEnvironment = process.env): DynamoPr
 		...(trajectoryId ? { trajectoryId } : {}),
 		...(parentTrajectoryId ? { parentTrajectoryId } : {}),
 		isSubagent: rewrite !== null,
-	};
-}
-
-export function buildDynamoAgentContext(
-	config: DynamoProviderRuntimeConfig,
-	options?: Pick<SimpleStreamOptions, "sessionId">,
-): DynamoAgentContext {
-	// session_id and trajectory_id both default to Pi's own session id when not
-	// pinned via DYN_AGENT_*. Dynamo's AgentContext requires session_id, so a
-	// default keeps the payload valid with zero operator env beyond DYN_REQUEST_TRACE.
-	const trajectoryId = config.trajectoryId ?? options?.sessionId;
-	const sessionId = config.sessionId ?? options?.sessionId;
-	return {
-		...(trajectoryId ? { trajectory_id: trajectoryId } : {}),
-		...(config.parentTrajectoryId ? { parent_trajectory_id: config.parentTrajectoryId } : {}),
-		...(sessionId ? { session_id: sessionId } : {}),
-		session_type_id: config.sessionTypeId,
-		phase: "reasoning",
-	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function mergeDynamoAgentContext(payload: unknown, agentContext: DynamoAgentContext): unknown {
-	const payloadRecord = isRecord(payload) ? payload : {};
-	const existingNvext = isRecord(payloadRecord.nvext) ? payloadRecord.nvext : {};
-	const existingAgentContext = isRecord(existingNvext.agent_context) ? existingNvext.agent_context : {};
-
-	return {
-		...payloadRecord,
-		nvext: {
-			...existingNvext,
-			agent_context: {
-				...agentContext,
-				...existingAgentContext,
-			},
-		},
 	};
 }
 
@@ -279,6 +207,7 @@ const dynamoOpenAICompat = {
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
 	supportsLongCacheRetention: false,
+	sendSessionAffinityHeaders: true,
 } satisfies OpenAICompletionsCompat;
 
 export function createDynamoModels(modelIds: string[], baseUrl: string): ProviderModelConfig[] {
@@ -336,40 +265,6 @@ function toOpenAICompletionsModel(model: Model<Api>): Model<"openai-completions"
 	};
 }
 
-type FetchLike = (input: string, init: RequestInit) => Promise<{ ok: boolean; status: number }>;
-
-export async function sendTrajectoryFinal(
-	config: DynamoProviderRuntimeConfig,
-	modelId: string,
-	createRequestId: () => string = randomUUID,
-	fetchImpl: FetchLike = fetch,
-): Promise<boolean> {
-	const agentContext = { ...buildDynamoAgentContext(config), trajectory_final: true };
-	if (!agentContext.trajectory_id) return false;
-	const finalModelId = modelId.trim() || DEFAULT_DYNAMO_MODEL_ID;
-	try {
-		const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
-			method: "POST",
-			headers: {
-				"content-type": "application/json",
-				authorization: `Bearer ${config.apiKey}`,
-				"x-request-id": createRequestId(),
-			},
-			body: JSON.stringify({
-				model: finalModelId,
-				messages: [{ role: "user", content: "." }],
-				max_tokens: 1,
-				stream: false,
-				nvext: { agent_context: agentContext },
-			}),
-			signal: AbortSignal.timeout(5000),
-		});
-		return response.ok;
-	} catch {
-		return false;
-	}
-}
-
 export function createDynamoStreamSimple(
 	config: DynamoProviderRuntimeConfig,
 	delegate: OpenAICompletionsStreamSimple = streamSimpleOpenAICompletions,
@@ -377,33 +272,20 @@ export function createDynamoStreamSimple(
 ): ProviderStreamSimple {
 	return (model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
 		const runtimeSessionId = options?.sessionId?.trim();
-		if (!config.sessionId && runtimeSessionId) {
-			config.sessionId = runtimeSessionId;
-		}
 		const openAIModel = toOpenAICompletionsModel(model);
+		const sessionId =
+			config.traceEnabled && config.isSubagent ? (config.trajectoryId ?? runtimeSessionId) : runtimeSessionId;
+		if (!config.sessionId && sessionId) {
+			config.sessionId = sessionId;
+		}
 		const headers = buildDynamoHeaders(options?.headers, createRequestId);
 		const baseOptions: SimpleStreamOptions = {
 			...options,
+			...(sessionId ? { sessionId } : {}),
 			apiKey: options?.apiKey ?? config.apiKey,
 			headers,
 		};
-
-		// DYN_REQUEST_TRACE off: behave as a plain dynamo/<model> provider — still
-		// add x-request-id for correlation, but inject no agentic nvext.
-		if (!config.traceEnabled) {
-			return delegate(openAIModel, context, baseOptions);
-		}
-
-		const agentContext = buildDynamoAgentContext(config, options);
-		const previousOnPayload = options?.onPayload;
-
-		return delegate(openAIModel, context, {
-			...baseOptions,
-			onPayload: async (payload) => {
-				const injectedPayload = mergeDynamoAgentContext(payload, agentContext);
-				return (await previousOnPayload?.(injectedPayload, model)) ?? injectedPayload;
-			},
-		});
+		return delegate(openAIModel, context, baseOptions);
 	};
 }
 

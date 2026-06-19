@@ -5,7 +5,6 @@ import { createAssistantMessageEventStream, type Context, type Model, type Simpl
 import { describe, expect, it } from "vitest";
 import {
 	applySubagentBridge,
-	buildDynamoAgentContext,
 	buildDynamoHeaders,
 	computeSubagentTrajectoryId,
 	computeSubagentTrajectoryRewrite,
@@ -15,11 +14,8 @@ import {
 	DEFAULT_SESSION_TYPE_ID,
 	type DynamoProviderRuntimeConfig,
 	DYNAMO_API,
-	mergeDynamoAgentContext,
 	normalizeDynamoBaseUrl,
 	readDynamoConfig,
-	seedRootTrajectory,
-	sendTrajectoryFinal,
 } from "../src/dynamo-provider.js";
 
 // Spread `base` with the given keys dropped (env-absent). Avoids the
@@ -179,99 +175,6 @@ describe("pi-subagents trajectory bridge", () => {
 	});
 });
 
-describe("root trajectory seed", () => {
-	it("seeds DYN_AGENT_TRAJECTORY_ID at the root so subagents inherit a parent", () => {
-		const env: NodeJS.ProcessEnv = { DYN_REQUEST_TRACE: "1" };
-		expect(seedRootTrajectory(env, () => "root-traj")).toBe(true);
-		expect(env.DYN_AGENT_TRAJECTORY_ID).toBe("root-traj");
-		// The bug fix: a subagent spawned from this env now resolves a parent.
-		const childEnv = {
-			...env,
-			PI_SUBAGENT_CHILD: "1",
-			PI_SUBAGENT_RUN_ID: "run-1",
-			PI_SUBAGENT_CHILD_AGENT: "researcher",
-		};
-		expect(computeSubagentTrajectoryRewrite(childEnv)).toEqual({
-			parentTrajectoryId: "root-traj",
-			trajectoryId: "run-1:researcher:0",
-		});
-	});
-
-	it("uses DYN_AGENT_SESSION_ID as the root trajectory when present", () => {
-		const env: NodeJS.ProcessEnv = { DYN_REQUEST_TRACE: "1", DYN_AGENT_SESSION_ID: "sess-7" };
-		expect(seedRootTrajectory(env, () => "unused")).toBe(true);
-		expect(env.DYN_AGENT_TRAJECTORY_ID).toBe("sess-7");
-	});
-
-	it("no-ops when trace is off, in a subagent child, or trajectory already set", () => {
-		expect(seedRootTrajectory({}, () => "x")).toBe(false);
-		expect(seedRootTrajectory({ DYN_REQUEST_TRACE: "1", PI_SUBAGENT_CHILD: "1" }, () => "x")).toBe(false);
-		const preset: NodeJS.ProcessEnv = { DYN_REQUEST_TRACE: "1", DYN_AGENT_TRAJECTORY_ID: "caller" };
-		expect(seedRootTrajectory(preset, () => "x")).toBe(false);
-		expect(preset.DYN_AGENT_TRAJECTORY_ID).toBe("caller");
-	});
-});
-
-describe("agent context injection", () => {
-	it("defaults both trajectory_id and session_id to the Pi session ID", () => {
-		expect(buildDynamoAgentContext(config, { sessionId: "pi-session" })).toEqual({
-			trajectory_id: "pi-session",
-			session_id: "pi-session",
-			session_type_id: DEFAULT_SESSION_TYPE_ID,
-			phase: "reasoning",
-		});
-	});
-
-	it("lets DYN_AGENT_* override the Pi-session defaults", () => {
-		expect(
-			buildDynamoAgentContext(
-				{ ...config, trajectoryId: "trajectory-from-env", sessionId: "session-from-env" },
-				{ sessionId: "pi-session" },
-			),
-		).toEqual({
-			trajectory_id: "trajectory-from-env",
-			session_id: "session-from-env",
-			session_type_id: DEFAULT_SESSION_TYPE_ID,
-			phase: "reasoning",
-		});
-	});
-
-	it("merges nvext.agent_context without dropping existing nvext fields", () => {
-		const payload = mergeDynamoAgentContext(
-			{
-				model: "demo",
-				nvext: {
-					extra_fields: ["worker_id", "timing"],
-					agent_context: {
-						session_id: "existing-session",
-						custom_field: "kept",
-					},
-				},
-			},
-			{
-				trajectory_id: "trajectory",
-				session_id: "default-session",
-				session_type_id: DEFAULT_SESSION_TYPE_ID,
-				phase: "reasoning",
-			},
-		);
-
-		expect(payload).toEqual({
-			model: "demo",
-			nvext: {
-				extra_fields: ["worker_id", "timing"],
-				agent_context: {
-					trajectory_id: "trajectory",
-					session_id: "existing-session",
-					session_type_id: DEFAULT_SESSION_TYPE_ID,
-					phase: "reasoning",
-					custom_field: "kept",
-				},
-			},
-		});
-	});
-});
-
 describe("request headers", () => {
 	it("sets x-request-id when absent", () => {
 		expect(buildDynamoHeaders(undefined, () => "request-1")).toEqual({ "x-request-id": "request-1" });
@@ -285,10 +188,11 @@ describe("request headers", () => {
 });
 
 describe("streamSimple wrapper", () => {
-	it("delegates through openai-completions with injected payload and headers", async () => {
+	it("delegates through openai-completions with Pi session affinity enabled", () => {
 		let capturedModel: Model<"openai-completions"> | undefined;
 		let capturedOptions: SimpleStreamOptions | undefined;
 		const runtimeConfig: DynamoProviderRuntimeConfig = { ...config };
+		const onPayload = (payload: unknown) => payload;
 
 		const streamSimple = createDynamoStreamSimple(
 			runtimeConfig,
@@ -302,34 +206,20 @@ describe("streamSimple wrapper", () => {
 
 		streamSimple(model, context, {
 			sessionId: "pi-session",
-			onPayload: (payload) => payload,
+			onPayload,
 		});
-
-		const onPayload = capturedOptions?.onPayload;
-		if (!onPayload) {
-			throw new Error("expected wrapped onPayload");
-		}
-		const injectedPayload = await onPayload({ model: "default" }, model);
 
 		expect(capturedModel?.api).toBe("openai-completions");
 		expect(capturedModel?.provider).toBe("dynamo");
+		expect(capturedModel?.compat?.sendSessionAffinityHeaders).toBe(true);
 		expect(runtimeConfig.sessionId).toBe("pi-session");
 		expect(capturedOptions?.apiKey).toBe("test-key");
+		expect(capturedOptions?.sessionId).toBe("pi-session");
+		expect(capturedOptions?.onPayload).toBe(onPayload);
 		expect(capturedOptions?.headers).toEqual({ "x-request-id": "request-1" });
-		expect(injectedPayload).toEqual({
-			model: "default",
-			nvext: {
-				agent_context: {
-					trajectory_id: "pi-session",
-					session_id: "pi-session",
-					session_type_id: DEFAULT_SESSION_TYPE_ID,
-					phase: "reasoning",
-				},
-			},
-		});
 	});
 
-	it("injects nothing when DYN_REQUEST_TRACE is off (plain provider), but still sets x-request-id", async () => {
+	it("injects no payload wrapper when DYN_REQUEST_TRACE is off, but still sets x-request-id", async () => {
 		let capturedOptions: SimpleStreamOptions | undefined;
 		const streamSimple = createDynamoStreamSimple(
 			{ ...config, traceEnabled: false },
@@ -342,9 +232,25 @@ describe("streamSimple wrapper", () => {
 
 		streamSimple(model, context, { sessionId: "pi-session" });
 		expect(capturedOptions?.headers).toEqual({ "x-request-id": "request-1" });
-		// No onPayload wrapper means no nvext injection.
+		expect(capturedOptions?.sessionId).toBe("pi-session");
 		const payload = { model: "default" };
 		expect((await capturedOptions?.onPayload?.(payload, model)) ?? payload).toEqual({ model: "default" });
+	});
+
+	it("preserves Pi's runtime session id for root requests even when a trace trajectory is configured", () => {
+		let capturedOptions: SimpleStreamOptions | undefined;
+		const streamSimple = createDynamoStreamSimple(
+			{ ...config, trajectoryId: "manual-root-traj", isSubagent: false },
+			(_model, _context, options) => {
+				capturedOptions = options;
+				return createAssistantMessageEventStream();
+			},
+			() => "request-1",
+		);
+
+		streamSimple(model, context, { sessionId: "pi-session" });
+
+		expect(capturedOptions?.sessionId).toBe("pi-session");
 	});
 });
 
@@ -379,65 +285,7 @@ describe("subagent trajectory context", () => {
 		expect(computeSubagentTrajectoryId(envWithout(subagentEnv, "PI_SUBAGENT_CHILD_INDEX"))).toBe("run-1:scout:0");
 	});
 
-	it("trajectory_final sends agent_context only", async () => {
-		const calls: Array<{ url: string; body: unknown; headers: unknown }> = [];
-		const fakeFetch = async (url: string, init: RequestInit) => {
-			calls.push({
-				url,
-				body: JSON.parse(String(init.body)),
-				headers: init.headers,
-			});
-			return { ok: true, status: 200 };
-		};
-
-		const cfg = readDynamoConfig({ ...subagentEnv, DYN_REQUEST_TRACE: "1", DYN_AGENT_SESSION_ID: "run-1" });
-		expect(await sendTrajectoryFinal(cfg, "zai-org/GLM-4.7-Flash", () => "close-req-1", fakeFetch)).toBe(true);
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.url).toBe("http://dynamo.test/v1/chat/completions");
-		expect(calls[0]?.body).toEqual({
-			model: "zai-org/GLM-4.7-Flash",
-			messages: [{ role: "user", content: "." }],
-			max_tokens: 1,
-			stream: false,
-			nvext: {
-				agent_context: {
-					trajectory_id: "run-1:scout:3",
-					parent_trajectory_id: "orchestrator",
-					session_id: "run-1",
-					session_type_id: DEFAULT_SESSION_TYPE_ID,
-					phase: "reasoning",
-					trajectory_final: true,
-				},
-			},
-		});
-		expect((calls[0]?.headers as Record<string, string>)["x-request-id"]).toBe("close-req-1");
-	});
-
-	it("reuses Pi's runtime session id for subagent trajectory_final", async () => {
-		const calls: Array<{ body: any }> = [];
-		const cfg = readDynamoConfig({ ...subagentEnv, DYN_REQUEST_TRACE: "1" });
-		const streamSimple = createDynamoStreamSimple(
-			cfg,
-			(_model, _context, _options) => createAssistantMessageEventStream(),
-			() => "request-1",
-		);
-		streamSimple(model, context, { sessionId: "pi-child-session" });
-
-		const fakeFetch = async (_url: string, init: RequestInit) => {
-			calls.push({ body: JSON.parse(String(init.body)) });
-			return { ok: true, status: 200 };
-		};
-
-		expect(await sendTrajectoryFinal(cfg, "zai-org/GLM-4.7-Flash", () => "close-req-1", fakeFetch)).toBe(true);
-		expect(calls[0]?.body.nvext.agent_context).toMatchObject({
-			trajectory_id: "run-1:scout:3",
-			parent_trajectory_id: "orchestrator",
-			session_id: "pi-child-session",
-			trajectory_final: true,
-		});
-	});
-
-	it("streamSimple injects subagent agent_context without session_control", async () => {
+	it("uses the subagent trajectory as the provider session id", () => {
 		let capturedOptions: SimpleStreamOptions | undefined;
 		const subagentConfig = readDynamoConfig({ ...subagentEnv, DYN_REQUEST_TRACE: "1", DYN_AGENT_SESSION_ID: "run-1" });
 		const streamSimple = createDynamoStreamSimple(
@@ -450,19 +298,7 @@ describe("subagent trajectory context", () => {
 		);
 
 		streamSimple(model, context, { sessionId: "pi-session" });
-		const onPayload = capturedOptions?.onPayload;
-		if (!onPayload) throw new Error("expected wrapped onPayload");
-		const injected = (await onPayload({ model: DEFAULT_DYNAMO_MODEL_ID }, model)) as {
-			nvext: { agent_context: unknown; session_control?: unknown };
-		};
 
-		expect(injected.nvext.agent_context).toEqual({
-			trajectory_id: "run-1:scout:3",
-			parent_trajectory_id: "orchestrator",
-			session_id: "run-1",
-			session_type_id: DEFAULT_SESSION_TYPE_ID,
-			phase: "reasoning",
-		});
-		expect(injected.nvext.session_control).toBeUndefined();
+		expect(capturedOptions?.sessionId).toBe("run-1:scout:3");
 	});
 });
