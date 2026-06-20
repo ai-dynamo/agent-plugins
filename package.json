@@ -1,7 +1,7 @@
 {
 	"name": "pi-dynamo-provider",
 	"version": "0.1.0",
-	"description": "Pi extension package that registers a Dynamo OpenAI-compatible provider with agent-context tracing metadata.",
+	"description": "Pi extension package that registers a Dynamo OpenAI-compatible provider with trajectory headers.",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",

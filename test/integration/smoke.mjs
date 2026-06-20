@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Integration smoke test: spins up a Dynamo frontend + mocker, sends one chat
-// completion through Dynamo and asserts that the OpenAI-compatible session_id
-// header becomes trajectory identity in the JSONL request trace.
+// completion through Dynamo and asserts that x-dynamo-trajectory-id becomes
+// trajectory identity in the JSONL request trace.
 //
 // Not a unit test — runs out-of-band of vitest. Driven by
 // scripts/integration-smoke.sh which boots Dynamo, exports the trace sink env
@@ -11,8 +11,8 @@
 // transport failure.
 //
 // Assertions, in order:
-//   1. session_id header becomes Dynamo agent_context trajectory_id
-//   2. subagent bridge rewrites the provider session id when
+//   1. x-dynamo-trajectory-id becomes Dynamo agent_context trajectory_id
+//   2. subagent bridge derives trajectory headers when
 //      PI_SUBAGENT_CHILD=1 + bookkeeping vars are exported
 //
 // Mocker output text is intentionally garbage; we never assert on response
@@ -21,7 +21,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { readDynamoConfig } from "../../dist/dynamo-provider.js";
+import { readDynamoConfig } from "../../dist/light/provider.js";
 
 const TRACE_PATH = mustEnv("DYN_REQUEST_TRACE_OUTPUT_PATH");
 const BASE_URL = mustEnv("DYNAMO_BASE_URL");
@@ -64,7 +64,7 @@ async function waitForTraceMatching(predicate, label, timeoutMs = 15000) {
 	throw new Error(`smoke: timed out waiting for trace event: ${label}`);
 }
 
-async function postChat(sessionId, xRequestId) {
+async function postChat({ trajectoryId, parentTrajectoryId, xRequestId }) {
 	const body = {
 		model: MODEL_ID,
 		messages: [{ role: "user", content: "smoke" }],
@@ -75,7 +75,8 @@ async function postChat(sessionId, xRequestId) {
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
-			session_id: sessionId,
+			"x-dynamo-trajectory-id": trajectoryId,
+			...(parentTrajectoryId ? { "x-dynamo-parent-trajectory-id": parentTrajectoryId } : {}),
 			"x-request-id": xRequestId,
 			authorization: `Bearer ${process.env.DYNAMO_API_KEY ?? "dynamo-local"}`,
 		},
@@ -96,8 +97,8 @@ function assert(condition, message) {
 
 async function caseTopLevelSessionHeader() {
 	const xRequestId = "smoke-toplevel-" + Date.now();
-	const sessionId = "smoke-session-toplevel";
-	await postChat(sessionId, xRequestId);
+	const trajectoryId = "smoke-session-toplevel";
+	await postChat({ trajectoryId, xRequestId });
 
 	const event = await waitForTraceMatching(
 		(e) => e.event_type === "request_end" && e.request?.x_request_id === xRequestId,
@@ -106,11 +107,7 @@ async function caseTopLevelSessionHeader() {
 
 	assert(event.agent_context, "trace event missing agent_context");
 	assert(
-		event.agent_context.session_type_id === "dynamo",
-		`session_type_id mismatch: got ${event.agent_context.session_type_id}`,
-	);
-	assert(
-		event.agent_context.trajectory_id === sessionId,
+		event.agent_context.trajectory_id === trajectoryId,
 		`trajectory_id mismatch: got ${event.agent_context.trajectory_id}`,
 	);
 	assert(
@@ -118,17 +115,16 @@ async function caseTopLevelSessionHeader() {
 			event.agent_context.parent_trajectory_id === null,
 		`parent_trajectory_id should be unset for top-level case`,
 	);
-	console.log("  PASS top-level trajectory_id from session_id header");
+	console.log("  PASS top-level trajectory_id from x-dynamo-trajectory-id");
 }
 
 async function caseSubagentBridge() {
 	// Simulate the env shape pi-subagents would set on a spawned child:
 	// inherited DYN_AGENT_TRAJECTORY_ID (parent's id) plus PI_SUBAGENT_* bookkeeping.
-	// readDynamoConfig should rewrite both ids, and the rewritten values must
-	// become the session_id header value when streamSimple dispatches.
+	// readDynamoConfig should rewrite both ids into Dynamo trajectory headers.
 	const env = {
 		DYNAMO_BASE_URL: BASE_URL,
-		DYN_AGENT_SESSION_TYPE_ID: "ci_smoke",
+		DYN_REQUEST_TRACE: "1",
 		DYN_AGENT_TRAJECTORY_ID: "smoke-orchestrator",
 		PI_SUBAGENT_CHILD: "1",
 		PI_SUBAGENT_RUN_ID: "smoke-run",
@@ -146,7 +142,11 @@ async function caseSubagentBridge() {
 	);
 
 	const xRequestId = "smoke-subagent-" + Date.now();
-	await postChat(config.trajectoryId, xRequestId);
+	await postChat({
+		trajectoryId: config.trajectoryId,
+		parentTrajectoryId: config.parentTrajectoryId,
+		xRequestId,
+	});
 
 	const event = await waitForTraceMatching(
 		(e) => e.event_type === "request_end" && e.request?.x_request_id === xRequestId,
@@ -158,7 +158,11 @@ async function caseSubagentBridge() {
 		event.agent_context.trajectory_id === "smoke-run:researcher:0",
 		`subagent trajectory_id mismatch: got ${event.agent_context.trajectory_id}`,
 	);
-	console.log("  PASS pi-subagents trajectory_id from session_id header");
+	assert(
+		event.agent_context.parent_trajectory_id === "smoke-orchestrator",
+		`subagent parent_trajectory_id mismatch: got ${event.agent_context.parent_trajectory_id}`,
+	);
+	console.log("  PASS pi-subagents trajectory headers");
 }
 
 async function main() {

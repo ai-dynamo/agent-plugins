@@ -60,16 +60,12 @@ Control that process through its PTY like a user:
 - paste a full prompt or slash command as text;
 - send Enter to submit;
 - wait for Pi to finish before sending the next prompt;
-- type `/quit` and wait for process exit so Pi emits `session_shutdown` and
-  the root `trajectory_final`.
+- type `/quit` and wait for process exit so Pi shuts down cleanly.
 
 Do not kill Pi to end a lifecycle run unless it is hung and the failure is the
 thing being tested.
 
-`DYN_AGENT_SESSION_TYPE_ID` is an optional label. The provider defaults
-`session_type_id` to `pi_coding_agent`; normal LLM requests use Pi's own
-session id as the trajectory id. Set it only when a run needs a stable,
-human-chosen trace class.
+When `DYN_REQUEST_TRACE=1`, the provider stamps `x-dynamo-trajectory-id` on LLM requests. Normal root turns use Pi's own session id as the trajectory id; pi-subagents children derive their id from `PI_SUBAGENT_*`.
 
 ## Drive A Lifecycle Run
 
@@ -151,7 +147,6 @@ rg -n "CHILD_.*_DONE|PARENT_AFTER_CHILDREN_OK|PARENT_FINAL_OK" "$RUN_ROOT/pi-ter
 jq -s '{
   events: length,
   agent_context_rows: (map(select(.event.agent_context? != null)) | length),
-  trajectory_final_rows: (map(select(.event.agent_context.trajectory_final == true)) | length),
   output_tokens_total: (map(.event.request.output_tokens // 0) | add),
   input_lengths: {
     min: (map(.event.request.replay.input_length // 0) | min),
@@ -169,10 +164,9 @@ nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv,noheader
 
 The lifecycle ordering to prove:
 
-1. Child trajectories close and release first.
-2. Parent-only turns still run after child release.
-3. Root trajectory closes only after Pi exits normally.
-4. The server is stopped and GPUs return to baseline.
+1. Child LLM requests carry child trajectory ids.
+2. Parent-only turns still carry the parent trajectory id.
+3. The server is stopped and GPUs return to baseline.
 
 With Dynamo request-trace unification (#10701 and later), `agent_context` lives
 on the same `dynamo.request.trace.v1` rows as request metrics. If trace rows are
@@ -192,9 +186,3 @@ present but `agent_context_rows` is zero, check that Pi had
   trace path points at the wrong run.
 - Trace rows without `agent_context` usually mean Pi was launched without
   `DYN_REQUEST_TRACE=1` or with a stale provider install.
-- Zero `trajectory_final_rows` after a clean `/quit` usually means the provider
-  install is stale or the endpoint rejected the close ping; check `frontend.log`
-  for the final POST status.
-- No `release_session` after finality usually means Dynamo was not in
-  `--router-mode kv`, the worker lacked `--enable-session-radix-cache`, or Pi
-  was killed instead of exited with `/quit`.
