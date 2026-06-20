@@ -1,6 +1,6 @@
 ---
 name: pi-headless-dynamo
-description: Drive the real Pi CLI headlessly against a Dynamo or OpenAI-compatible endpoint for pi-dynamo-provider validation. Use when testing Pi provider installs, agent_context tracing, trajectory-native lifecycle release, Pi subagent runs, saved traces, or parent/child session behavior without manually faking Pi or pi-subagents internals.
+description: Drive the real Pi CLI headlessly against a Dynamo or OpenAI-compatible endpoint for pi-dynamo-provider validation. Use when testing Pi provider installs, trajectory header tracing, Pi subagent runs, saved traces, or parent/child trajectory behavior without manually faking Pi or pi-subagents internals.
 ---
 
 # Pi Headless Dynamo
@@ -20,7 +20,7 @@ directly to stand in for Pi, or patch pi-subagents while validating this repo.
 Use a running Dynamo endpoint or start one with the repo launcher:
 
 ```bash
-scripts/launch-agg-agent.sh --dynamo-dir /ephemeral/dynamo-radix-native --gpu 0,1 --tp 2 --http-port 18083 --system-port 18084
+pi-plugin/scripts/launch-agg-agent.sh --dynamo-dir /ephemeral/dynamo-radix-native --gpu 0,1 --tp 2 --http-port 18083 --system-port 18084
 ```
 
 Before launching Pi, verify the endpoint and model:
@@ -168,9 +168,9 @@ The lifecycle ordering to prove:
 2. Parent-only turns still carry the parent trajectory id.
 3. The server is stopped and GPUs return to baseline.
 
-With Dynamo request-trace unification (#10701 and later), `agent_context` lives
-on the same `dynamo.request.trace.v1` rows as request metrics. If trace rows are
-present but `agent_context_rows` is zero, check that Pi had
+With Dynamo request-trace unification (#10701 and later), trajectory identity
+lives on the same `dynamo.request.trace.v1` rows as request metrics. If trace
+rows are present but `agent_context_rows` is zero, check that Pi had
 `DYN_REQUEST_TRACE=1` and that the provider package was installed from this repo.
 
 ## Troubleshooting

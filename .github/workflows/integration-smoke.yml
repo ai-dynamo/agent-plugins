@@ -59,6 +59,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+          cache-dependency-path: pi-plugin/package-lock.json
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -93,6 +94,7 @@ jobs:
           key: hf-tokenizer-${{ env.DYNAMO_TEST_MODEL_ID }}
 
       - name: Install npm dependencies
+        working-directory: pi-plugin
         run: npm ci
 
       - name: Install system build deps
@@ -128,7 +130,7 @@ jobs:
       - name: Run integration smoke test
         env:
           SMOKE_KEEP_LOGS: "1"
-        run: ./scripts/integration-smoke.sh
+        run: ./pi-plugin/scripts/integration-smoke.sh
 
       - name: Upload trace JSONL on success
         if: success()
