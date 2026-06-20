@@ -24,7 +24,6 @@ export interface DynamoToolRelayConfig {
 
 export interface DynamoRequestTraceAgentContext {
 	session_type_id: string;
-	session_id: string;
 	trajectory_id: string;
 	parent_trajectory_id?: string;
 }
@@ -119,7 +118,6 @@ export function buildDynamoRequestTraceAgentContext(
 
 	return {
 		session_type_id: config.sessionTypeId,
-		session_id: config.sessionId ?? trajectoryId,
 		trajectory_id: trajectoryId,
 		...(config.parentTrajectoryId ? { parent_trajectory_id: config.parentTrajectoryId } : {}),
 	};

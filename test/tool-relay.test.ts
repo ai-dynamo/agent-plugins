@@ -81,20 +81,18 @@ describe("tool relay config", () => {
 });
 
 describe("tool relay agent context", () => {
-	it("uses the Pi session ID as default trajectory and session ID", () => {
+	it("uses the Pi session ID as default trajectory ID", () => {
 		expect(buildDynamoRequestTraceAgentContext(config, "pi-session")).toEqual({
 			session_type_id: DEFAULT_SESSION_TYPE_ID,
-			session_id: "pi-session",
 			trajectory_id: "pi-session",
 		});
 	});
 
-	it("uses env session/trajectory IDs when provided", () => {
+	it("uses configured trajectory IDs when provided", () => {
 		expect(
 			buildDynamoRequestTraceAgentContext(
 				{
 					...config,
-					sessionId: "session-1",
 					trajectoryId: "trajectory-1",
 					parentTrajectoryId: "parent-1",
 				},
@@ -102,7 +100,6 @@ describe("tool relay agent context", () => {
 			),
 		).toEqual({
 			session_type_id: DEFAULT_SESSION_TYPE_ID,
-			session_id: "session-1",
 			trajectory_id: "trajectory-1",
 			parent_trajectory_id: "parent-1",
 		});
@@ -121,7 +118,7 @@ describe("tool relay records", () => {
 		let unixMs = 1000;
 		let perfMs = 10;
 		const relay = new DynamoToolEventRelay(
-			{ ...config, sessionId: "session-1" },
+			config,
 			publisher,
 			() => unixMs,
 			() => perfMs,
@@ -144,7 +141,6 @@ describe("tool relay records", () => {
 			event_source: "harness",
 			agent_context: {
 				session_type_id: DEFAULT_SESSION_TYPE_ID,
-				session_id: "session-1",
 				trajectory_id: "pi-session",
 			},
 			tool: {
@@ -177,7 +173,6 @@ describe("tool relay records", () => {
 			event_source: "harness",
 			agent_context: {
 				session_type_id: DEFAULT_SESSION_TYPE_ID,
-				session_id: "session-1",
 				trajectory_id: "pi-session",
 			},
 			tool: {
@@ -219,7 +214,6 @@ describe("tool relay records", () => {
 			event_source: "harness",
 			agent_context: {
 				session_type_id: DEFAULT_SESSION_TYPE_ID,
-				session_id: "pi-session",
 				trajectory_id: "pi-session",
 			},
 			tool: {

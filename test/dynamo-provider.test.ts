@@ -67,7 +67,6 @@ describe("dynamo provider config", () => {
 				DYNAMO_API_KEY: "dyn-key",
 				DYN_REQUEST_TRACE: "1",
 				DYN_AGENT_SESSION_TYPE_ID: "session-kind",
-				DYN_AGENT_SESSION_ID: "session-id",
 				DYN_AGENT_TRAJECTORY_ID: "trajectory-id",
 				DYN_AGENT_PARENT_TRAJECTORY_ID: "parent-id",
 			}),
@@ -76,7 +75,6 @@ describe("dynamo provider config", () => {
 			apiKey: "dyn-key",
 			traceEnabled: true,
 			sessionTypeId: "session-kind",
-			sessionId: "session-id",
 			trajectoryId: "trajectory-id",
 			parentTrajectoryId: "parent-id",
 			isSubagent: false,
@@ -212,7 +210,6 @@ describe("streamSimple wrapper", () => {
 		expect(capturedModel?.api).toBe("openai-completions");
 		expect(capturedModel?.provider).toBe("dynamo");
 		expect(capturedModel?.compat?.sendSessionAffinityHeaders).toBe(true);
-		expect(runtimeConfig.sessionId).toBe("pi-session");
 		expect(capturedOptions?.apiKey).toBe("test-key");
 		expect(capturedOptions?.sessionId).toBe("pi-session");
 		expect(capturedOptions?.onPayload).toBe(onPayload);
@@ -287,7 +284,7 @@ describe("subagent trajectory context", () => {
 
 	it("uses the subagent trajectory as the provider session id", () => {
 		let capturedOptions: SimpleStreamOptions | undefined;
-		const subagentConfig = readDynamoConfig({ ...subagentEnv, DYN_REQUEST_TRACE: "1", DYN_AGENT_SESSION_ID: "run-1" });
+		const subagentConfig = readDynamoConfig({ ...subagentEnv, DYN_REQUEST_TRACE: "1" });
 		const streamSimple = createDynamoStreamSimple(
 			subagentConfig,
 			(_model, _context, options) => {

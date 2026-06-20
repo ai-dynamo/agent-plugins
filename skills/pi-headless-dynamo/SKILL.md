@@ -66,10 +66,10 @@ Control that process through its PTY like a user:
 Do not kill Pi to end a lifecycle run unless it is hung and the failure is the
 thing being tested.
 
-`DYN_AGENT_SESSION_TYPE_ID` and `DYN_AGENT_SESSION_ID` are optional labels. The
-provider defaults `session_type_id` to `pi_coding_agent`; normal LLM requests
-use Pi's own session id when `DYN_AGENT_SESSION_ID` is absent. Set them only
-when a run needs stable, human-chosen trace labels.
+`DYN_AGENT_SESSION_TYPE_ID` is an optional label. The provider defaults
+`session_type_id` to `pi_coding_agent`; normal LLM requests use Pi's own
+session id as the trajectory id. Set it only when a run needs a stable,
+human-chosen trace class.
 
 ## Drive A Lifecycle Run
 

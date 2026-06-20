@@ -3,7 +3,7 @@
 
 // Integration smoke test: spins up a Dynamo frontend + mocker, sends one chat
 // completion through Dynamo and asserts that the OpenAI-compatible session_id
-// header round-trips into the JSONL request trace.
+// header becomes trajectory identity in the JSONL request trace.
 //
 // Not a unit test — runs out-of-band of vitest. Driven by
 // scripts/integration-smoke.sh which boots Dynamo, exports the trace sink env
@@ -11,7 +11,7 @@
 // transport failure.
 //
 // Assertions, in order:
-//   1. session_id becomes Dynamo agent_context session_id + trajectory_id
+//   1. session_id header becomes Dynamo agent_context trajectory_id
 //   2. subagent bridge rewrites the provider session id when
 //      PI_SUBAGENT_CHILD=1 + bookkeeping vars are exported
 //
@@ -110,10 +110,6 @@ async function caseTopLevelSessionHeader() {
 		`session_type_id mismatch: got ${event.agent_context.session_type_id}`,
 	);
 	assert(
-		event.agent_context.session_id === sessionId,
-		`session_id mismatch: got ${event.agent_context.session_id}`,
-	);
-	assert(
 		event.agent_context.trajectory_id === sessionId,
 		`trajectory_id mismatch: got ${event.agent_context.trajectory_id}`,
 	);
@@ -122,7 +118,7 @@ async function caseTopLevelSessionHeader() {
 			event.agent_context.parent_trajectory_id === null,
 		`parent_trajectory_id should be unset for top-level case`,
 	);
-	console.log("  PASS top-level session_id round-trip");
+	console.log("  PASS top-level trajectory_id from session_id header");
 }
 
 async function caseSubagentBridge() {
@@ -133,7 +129,6 @@ async function caseSubagentBridge() {
 	const env = {
 		DYNAMO_BASE_URL: BASE_URL,
 		DYN_AGENT_SESSION_TYPE_ID: "ci_smoke",
-		DYN_AGENT_SESSION_ID: "smoke-session-subagent",
 		DYN_AGENT_TRAJECTORY_ID: "smoke-orchestrator",
 		PI_SUBAGENT_CHILD: "1",
 		PI_SUBAGENT_RUN_ID: "smoke-run",
@@ -163,11 +158,7 @@ async function caseSubagentBridge() {
 		event.agent_context.trajectory_id === "smoke-run:researcher:0",
 		`subagent trajectory_id mismatch: got ${event.agent_context.trajectory_id}`,
 	);
-	assert(
-		event.agent_context.session_id === "smoke-run:researcher:0",
-		`subagent session_id mismatch: got ${event.agent_context.session_id}`,
-	);
-	console.log("  PASS pi-subagents trajectory session_id round-trip");
+	console.log("  PASS pi-subagents trajectory_id from session_id header");
 }
 
 async function main() {

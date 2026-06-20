@@ -6,13 +6,13 @@ A Pi extension that registers a `dynamo` provider backed by [Dynamo](https://git
 pi --model dynamo/<model-id>
 ```
 
-With one switch (`DYN_REQUEST_TRACE=1`) it also tags requests through Pi's native `session_id` header, gives each pi-subagent its own provider session id, and can relay Pi tool events into the trace — all without patching `pi-mono`.
+With one switch (`DYN_REQUEST_TRACE=1`) it also tags requests through Pi's native `session_id` header, gives each pi-subagent its own trajectory id, and can relay Pi tool events into the trace — all without patching `pi-mono`.
 
 ## What it does
 
 - **Model provider** — registers `dynamo`, discovers models from `/v1/models` (falls back to `dynamo/default`), and streams via Pi's OpenAI-compatible path.
-- **Session header tracing** — enables Pi's OpenAI-compatible `session_id` affinity header so Dynamo can attribute each LLM request in its trace.
-- **Subagent trajectory ids** — gives each [pi-subagents](https://github.com/nicobailon/pi-subagents) child its own provider session id. See [Subagent trajectory ids](#subagent-trajectory-ids).
+- **Session header tracing** — enables Pi's OpenAI-compatible `session_id` affinity header so Dynamo can attribute each LLM request as a trajectory in its trace.
+- **Subagent trajectory ids** — gives each [pi-subagents](https://github.com/nicobailon/pi-subagents) child its own trajectory id. See [Subagent trajectory ids](#subagent-trajectory-ids).
 - **Tool-event relay** — optionally pushes Pi `tool_start` / `tool_end` / `tool_error` events to Dynamo over ZMQ so one trace shows LLM spans and tool spans together.
 
 Everything but the bare model provider is gated by the `DYN_REQUEST_TRACE` master switch and is off by default.
@@ -37,7 +37,7 @@ Point Pi at a running Dynamo endpoint:
 ```bash
 export DYNAMO_BASE_URL=http://127.0.0.1:8000/v1
 export DYNAMO_API_KEY=dummy        # local Dynamo usually ignores this; defaults to dynamo-local
-export DYN_REQUEST_TRACE=1         # opt into session_id tracing + optional tool relay
+export DYN_REQUEST_TRACE=1         # opt into trajectory tracing + optional tool relay
 
 pi --model dynamo/<model-id> -p "Reply exactly ok."
 ```
@@ -46,7 +46,7 @@ That's the whole required setup. Everything else is only set when you want to ov
 
 ## Subagent trajectory ids
 
-When `DYN_REQUEST_TRACE=1`, the provider relies on Pi's normal `sessionId` plumbing. Pi's OpenAI-compatible path sends that as the `session_id` header, and Dynamo maps it to request-trace `agent_context.session_id` and `agent_context.trajectory_id`.
+When `DYN_REQUEST_TRACE=1`, the provider relies on Pi's normal `sessionId` plumbing. Pi's OpenAI-compatible path sends that as the `session_id` header, and Dynamo maps it to request-trace `agent_context.trajectory_id`.
 
 ```mermaid
 sequenceDiagram
@@ -72,9 +72,8 @@ The only thing you must set is the connection (`DYNAMO_BASE_URL`) and, to enable
 | --- | --- | --- |
 | `DYNAMO_BASE_URL` | `http://127.0.0.1:8000/v1` | Dynamo endpoint root (falls back to `OPENAI_BASE_URL`). |
 | `DYNAMO_API_KEY` | `dynamo-local` | Bearer token. |
-| `DYN_REQUEST_TRACE` | off | **Master switch.** When truthy (`1`/`true`/`yes`/`on`), enables `session_id` tracing and the tool relay. |
-| `DYN_AGENT_SESSION_TYPE_ID` | `pi_coding_agent` | Session class on ZMQ tool trace records. |
-| `DYN_AGENT_SESSION_ID` | unset | Optional top-level run id on ZMQ tool trace records. |
+| `DYN_REQUEST_TRACE` | off | **Master switch.** When truthy (`1`/`true`/`yes`/`on`), enables `session_id` header trace attribution and the tool relay. |
+| `DYN_AGENT_SESSION_TYPE_ID` | `pi_coding_agent` | Trace class on ZMQ tool trace records. |
 | `DYN_AGENT_TRAJECTORY_ID` | unset | Optional parent trajectory seed for [trajectory linking](#trajectory-linking) in subagents. |
 | `DYN_AGENT_PARENT_TRAJECTORY_ID` | unset | Parent trajectory; set manually to override the bridge. |
 | `DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` | unset | Dynamo-bound ZMQ PULL endpoint for the tool relay. |
@@ -125,7 +124,7 @@ npm run test    # vitest
 npm run build   # -> dist/
 ```
 
-`scripts/integration-smoke.sh` boots Dynamo's frontend + mocker and asserts the `session_id` header round-trips into the trace; it is the out-of-band end-to-end check.
+`scripts/integration-smoke.sh` boots Dynamo's frontend + mocker and asserts the `session_id` header becomes `trajectory_id` in the trace; it is the out-of-band end-to-end check.
 
 ## Troubleshooting
 

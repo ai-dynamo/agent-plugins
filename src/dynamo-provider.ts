@@ -30,7 +30,6 @@ export interface DynamoEnvironment {
 	// provider is just a plain `dynamo/<model>` provider.
 	DYN_REQUEST_TRACE?: string;
 	DYN_AGENT_SESSION_TYPE_ID?: string;
-	DYN_AGENT_SESSION_ID?: string;
 	DYN_AGENT_TRAJECTORY_ID?: string;
 	DYN_AGENT_PARENT_TRAJECTORY_ID?: string;
 	// pi-subagents bookkeeping. pi-subagents spawns each child agent as a
@@ -51,7 +50,6 @@ export interface DynamoProviderRuntimeConfig {
 	// tool relay; the model provider itself is registered regardless.
 	traceEnabled: boolean;
 	sessionTypeId: string;
-	sessionId?: string;
 	trajectoryId?: string;
 	parentTrajectoryId?: string;
 	isSubagent?: boolean;
@@ -166,7 +164,6 @@ export function applySubagentBridge(env: NodeJS.ProcessEnv = process.env): boole
 
 export function readDynamoConfig(env: DynamoEnvironment = process.env): DynamoProviderRuntimeConfig {
 	const rewrite = computeSubagentTrajectoryRewrite(env);
-	const sessionId = getEnvValue(env, "DYN_AGENT_SESSION_ID");
 	const trajectoryId = rewrite?.trajectoryId ?? getEnvValue(env, "DYN_AGENT_TRAJECTORY_ID");
 	const parentTrajectoryId =
 		rewrite?.parentTrajectoryId ?? getEnvValue(env, "DYN_AGENT_PARENT_TRAJECTORY_ID");
@@ -176,7 +173,6 @@ export function readDynamoConfig(env: DynamoEnvironment = process.env): DynamoPr
 		apiKey: getEnvValue(env, "DYNAMO_API_KEY") ?? DEFAULT_DYNAMO_API_KEY,
 		traceEnabled: isTruthyEnv(getEnvValue(env, "DYN_REQUEST_TRACE")),
 		sessionTypeId: getEnvValue(env, "DYN_AGENT_SESSION_TYPE_ID") ?? DEFAULT_SESSION_TYPE_ID,
-		...(sessionId ? { sessionId } : {}),
 		...(trajectoryId ? { trajectoryId } : {}),
 		...(parentTrajectoryId ? { parentTrajectoryId } : {}),
 		isSubagent: rewrite !== null,
@@ -275,9 +271,6 @@ export function createDynamoStreamSimple(
 		const openAIModel = toOpenAICompletionsModel(model);
 		const sessionId =
 			config.traceEnabled && config.isSubagent ? (config.trajectoryId ?? runtimeSessionId) : runtimeSessionId;
-		if (!config.sessionId && sessionId) {
-			config.sessionId = sessionId;
-		}
 		const headers = buildDynamoHeaders(options?.headers, createRequestId);
 		const baseOptions: SimpleStreamOptions = {
 			...options,
