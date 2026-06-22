@@ -3,6 +3,7 @@
 
 import importlib.util
 import pathlib
+import sys
 import types
 import unittest
 
@@ -19,52 +20,41 @@ def load_plugin():
 
 
 class DynamoTrajectoryPluginTest(unittest.TestCase):
-    def test_adds_session_id_as_dynamo_trajectory_header(self):
-        plugin = load_plugin()
-
-        result = plugin.add_dynamo_trajectory_header(
-            session_id="hermes-session",
-            request={"model": "qwen", "extra_headers": {"x-test": "1"}},
-        )
-
-        self.assertEqual(
-            result,
-            {
-                "request": {
-                    "model": "qwen",
-                    "extra_headers": {
-                        "x-test": "1",
-                        "x-dynamo-trajectory-id": "hermes-session",
-                    },
-                }
-            },
-        )
-
-    def test_preserves_explicit_dynamo_trajectory_header(self):
-        plugin = load_plugin()
-
-        result = plugin.add_dynamo_trajectory_header(
-            session_id="hermes-session",
-            request={"extra_headers": {"x-dynamo-trajectory-id": "explicit"}},
-        )
-
-        self.assertEqual(result["request"]["extra_headers"]["x-dynamo-trajectory-id"], "explicit")
-
-    def test_skips_without_session_id(self):
-        plugin = load_plugin()
-
-        self.assertIsNone(plugin.add_dynamo_trajectory_header(request={"model": "qwen"}))
-
-    def test_registers_llm_request_middleware(self):
+    def test_pre_api_request_patches_openai_client_creation(self):
         plugin = load_plugin()
         calls = []
-        ctx = types.SimpleNamespace(
-            register_middleware=lambda kind, callback: calls.append((kind, callback))
+
+        class AIAgent:
+            session_id = "hermes-session"
+
+            def _create_openai_client(self, client_kwargs, *, reason, shared):
+                return client_kwargs
+
+        previous = sys.modules.get("run_agent")
+        sys.modules["run_agent"] = types.SimpleNamespace(AIAgent=AIAgent)
+        try:
+            ctx = types.SimpleNamespace(
+                register_hook=lambda name, callback: calls.append((name, callback))
+            )
+            plugin.register(ctx)
+            calls[0][1]()
+            result = AIAgent()._create_openai_client(
+                {"default_headers": {"x-test": "1"}},
+                reason="test",
+                shared=False,
+            )
+        finally:
+            if previous is None:
+                sys.modules.pop("run_agent", None)
+            else:
+                sys.modules["run_agent"] = previous
+
+        self.assertEqual(calls[0][0], "pre_api_request")
+        self.assertEqual(result["default_headers"]["x-test"], "1")
+        self.assertEqual(
+            result["default_headers"]["x-dynamo-trajectory-id"],
+            "hermes-session",
         )
-
-        plugin.register(ctx)
-
-        self.assertEqual(calls, [("llm_request", plugin.add_dynamo_trajectory_header)])
 
 
 if __name__ == "__main__":

@@ -1,11 +1,13 @@
 # Hermes Dynamo Trajectory Plugin
 
-Hermes middleware plugin that copies the current Hermes `session_id` into Dynamo's `x-dynamo-trajectory-id` request header.
+Hermes plugin that copies the current Hermes `session_id` into Dynamo's `x-dynamo-trajectory-id` request header.
 
 ## Install
 
 ```bash
-hermes plugins install /absolute/path/to/repo/hermes-plugin
+git clone https://github.com/ai-dynamo/agent-plugins.git ~/agent-plugins
+mkdir -p ~/.hermes/plugins
+ln -sfnT ~/agent-plugins/hermes-plugin ~/.hermes/plugins/dynamo_trajectory
 hermes plugins enable dynamo_trajectory
 ```
 
