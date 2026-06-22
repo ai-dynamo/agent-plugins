@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Start a Dynamo frontend + mocker worker against a known-good Dynamo version,
-# then run test/integration/smoke.mjs which asserts that nvext.agent_context
-# round-trips end-to-end through the trace sink. Tears down processes on exit.
+# then run test/integration/smoke.mjs which asserts that x-dynamo-trajectory-id
+# becomes trajectory identity in the trace sink. Tears down processes on exit.
 #
 # Required env:
 #   DYNAMO_TEST_MODEL_ID  HuggingFace model id for the mocker tokenizer
@@ -68,7 +68,7 @@ wait_for_http() {
 
 echo "smoke: trace dir = ${TRACE_DIR}"
 
-# Build the provider so the smoke test can import dist/dynamo-provider.js.
+# Build the provider so the smoke test can import dist/light/provider.js.
 echo "smoke: building pi-dynamo-provider"
 (cd "${REPO_ROOT}" && npm run build >/dev/null)
 

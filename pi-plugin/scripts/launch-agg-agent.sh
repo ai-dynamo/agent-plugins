@@ -181,7 +181,6 @@ Perfetto conversion:
   python benchmarks/request_trace/convert_to_perfetto.py \\
     ${TRACE_PATH} \\
     --include-markers \\
-    --separate-stage-tracks \\
     --output ${RUN_DIR}/dynamo-request-trace.perfetto.json
 
 EOF
