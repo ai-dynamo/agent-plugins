@@ -66,6 +66,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Test Hermes plugin
+        run: python3 -m unittest discover -s hermes-plugin/tests
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
