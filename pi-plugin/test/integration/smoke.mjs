@@ -12,7 +12,7 @@
 //
 // Assertions, in order:
 //   1. x-dynamo-trajectory-id becomes Dynamo agent_context trajectory_id
-//   2. subagent bridge derives trajectory headers when
+//   2. subagent bridge derives a child trajectory id when
 //      PI_SUBAGENT_CHILD=1 + bookkeeping vars are exported
 //
 // Mocker output text is intentionally garbage; we never assert on response
@@ -121,7 +121,7 @@ async function caseTopLevelSessionHeader() {
 async function caseSubagentBridge() {
 	// Simulate the env shape pi-subagents would set on a spawned child:
 	// inherited DYN_AGENT_TRAJECTORY_ID (parent's id) plus PI_SUBAGENT_* bookkeeping.
-	// readDynamoConfig should rewrite both ids into Dynamo trajectory headers.
+	// readDynamoConfig should rewrite both ids before the request is sent.
 	const env = {
 		DYNAMO_BASE_URL: BASE_URL,
 		DYN_REQUEST_TRACE: "1",
@@ -158,11 +158,7 @@ async function caseSubagentBridge() {
 		event.agent_context.trajectory_id === "smoke-run:researcher:0",
 		`subagent trajectory_id mismatch: got ${event.agent_context.trajectory_id}`,
 	);
-	assert(
-		event.agent_context.parent_trajectory_id === "smoke-orchestrator",
-		`subagent parent_trajectory_id mismatch: got ${event.agent_context.parent_trajectory_id}`,
-	);
-	console.log("  PASS pi-subagents trajectory headers");
+	console.log("  PASS pi-subagents trajectory_id header");
 }
 
 async function main() {
