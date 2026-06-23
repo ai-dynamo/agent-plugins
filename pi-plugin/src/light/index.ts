@@ -11,10 +11,10 @@ import {
 	readDynamoConfig,
 } from "./provider.js";
 import { registerDynamoToolEventRelay } from "./tool-relay.js";
-import { applySubagentTrajectoryBridge } from "./trajectory.js";
+import { applySubagentSessionBridge } from "./session.js";
 
 export default async function dynamoProviderExtension(pi: ExtensionAPI): Promise<void> {
-	applySubagentTrajectoryBridge();
+	applySubagentSessionBridge();
 	const config = readDynamoConfig();
 	const discoveredModels = await discoverDynamoModels(config);
 	const models =
@@ -25,4 +25,4 @@ export default async function dynamoProviderExtension(pi: ExtensionAPI): Promise
 
 export * from "./provider.js";
 export * from "./tool-relay.js";
-export * from "./trajectory.js";
+export * from "./session.js";

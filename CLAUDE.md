@@ -8,12 +8,12 @@ SPDX-License-Identifier: Apache-2.0
 Repo layout:
 
 - `pi-plugin/` — Pi extension registering a `dynamo` provider for Dynamo's OpenAI-compatible chat-completions endpoint.
-- `hermes-plugin/` — Hermes middleware plugin that injects Dynamo trajectory headers from Hermes `session_id`.
+- `hermes-plugin/` — Hermes middleware plugin that injects Dynamo session headers from Hermes `session_id`.
 
 The Pi plugin has three source files under `pi-plugin/src/`:
 
 - `index.ts` — thin re-export of the light implementation.
-- `src/light/provider.ts` — config + streamSimple wrapper. Reads `DYN_REQUEST_TRACE`, `DYN_AGENT_*`, and `PI_SUBAGENT_*` env vars. When tracing is enabled, stamps `x-dynamo-trajectory-id` / parent headers and leaves Pi `sessionId` untouched.
+- `src/light/provider.ts` — config + streamSimple wrapper. Reads `DYN_REQUEST_TRACE`, `DYN_AGENT_*`, and `PI_SUBAGENT_*` env vars. When tracing is enabled, stamps `x-dynamo-session-id` / parent headers and leaves Pi `sessionId` untouched.
 - `src/light/tool-relay.ts` — ZMQ PUSH publisher for Pi tool events. Connects to a Dynamo-bound PULL endpoint. Wire format: `[topic, seq_be_u64, msgpack(RequestTraceRecord)]`.
 
 ## Build, test, check
@@ -28,7 +28,7 @@ npm run build     # tsc -p tsconfig.build.json → dist/
 
 Pi tests live in `pi-plugin/test/` as siblings of `pi-plugin/src/`. Use vitest's `describe`/`it`/`expect`. Mirror the existing structure: one test file per source file, fixture data inline rather than separate fixture files.
 
-`pi-plugin/test/integration/smoke.mjs` is the out-of-band end-to-end check — driven by `pi-plugin/scripts/integration-smoke.sh`, not vitest. It boots Dynamo's frontend + mocker, sends one real chat completion, and asserts `x-dynamo-trajectory-id` becomes `trajectory_id` in the request trace JSONL. Two cases: top-level trajectory id and the pi-subagents bridge. Mocker output is garbage; assertions only target the trace envelope. CI clones `ai-dynamo/dynamo@main` and builds from source. Cargo cache keeps warm runs ~60-90s, cold ~10 min. `workflow_dispatch` accepts a `dynamo_ref` input for ad-hoc validation against a specific branch, tag, or SHA.
+`pi-plugin/test/integration/smoke.mjs` is the out-of-band end-to-end check — driven by `pi-plugin/scripts/integration-smoke.sh`, not vitest. It boots Dynamo's frontend + mocker, sends one real chat completion, and asserts `x-dynamo-session-id` becomes `session_id` in the request trace JSONL. Two cases: top-level session id and the pi-subagents bridge. Mocker output is garbage; assertions only target the trace envelope. CI clones `ai-dynamo/dynamo@main` and builds from source. Cargo cache keeps warm runs ~60-90s, cold ~10 min. `workflow_dispatch` accepts a `dynamo_ref` input for ad-hoc validation against a specific branch, tag, or SHA.
 
 For real Pi CLI lifecycle validation against a Dynamo endpoint, read `pi-plugin/skills/pi-headless-dynamo/SKILL.md` first and drive the actual interactive Pi TUI instead of faking provider requests or pi-subagents env.
 
@@ -61,7 +61,7 @@ python3 -m unittest discover -s hermes-plugin/tests
 | Prefix | Direction | Examples |
 |---|---|---|
 | `DYNAMO_*` | client config (we read) | `DYNAMO_BASE_URL`, `DYNAMO_API_KEY` |
-| `DYN_AGENT_*` | optional trajectory override / subagent parent link | `DYN_AGENT_TRAJECTORY_ID`, `DYN_AGENT_PARENT_TRAJECTORY_ID` |
+| `DYN_AGENT_*` | optional session override / subagent parent link | `DYN_AGENT_SESSION_ID`, `DYN_AGENT_PARENT_SESSION_ID` |
 | `DYN_REQUEST_TRACE*` | request trace switch and tool bridge | `DYN_REQUEST_TRACE`, `DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` |
 | `PI_SUBAGENT_*` | pi-subagents bookkeeping (we read only) | `PI_SUBAGENT_CHILD`, `PI_SUBAGENT_RUN_ID`, `PI_SUBAGENT_CHILD_AGENT`, `PI_SUBAGENT_CHILD_INDEX` |
 | `OPENAI_BASE_URL` | OpenAI-compatibility fallback (we read) | only consulted when `DYNAMO_BASE_URL` is unset |
@@ -83,6 +83,6 @@ External contributions are not currently accepted. This is an NVIDIA-internal co
 
 ## What to leave alone
 
-- Dynamo owns the request trace schema. The Pi provider stamps trajectory headers for LLM requests and keeps explicit tool calls on the ZMQ trace path. The Hermes plugin only stamps request headers.
+- Dynamo owns the request trace schema. The Pi provider stamps session headers for LLM requests and keeps explicit tool calls on the ZMQ trace path. The Hermes plugin only stamps request headers.
 - The `request.trace.v1` schema is owned upstream by Dynamo (`dynamo/lib/llm/src/request_trace/`). Don't change record shapes here without an upstream PR landing first.
 - `pi-plugin/package-lock.json` churn from npm version differences should be reverted before committing (`git checkout -- pi-plugin/package-lock.json` if a no-op edit appears).

@@ -6,7 +6,7 @@ import { encode } from "@msgpack/msgpack";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Push } from "zeromq";
 import type { DynamoConfig, DynamoEnvironment } from "./provider.js";
-import { envValue } from "./trajectory.js";
+import { envValue } from "./session.js";
 
 export const DEFAULT_TOOL_EVENTS_TOPIC = "agent-tool-events";
 export const DEFAULT_TOOL_EVENT_QUEUE_CAPACITY = 100000;
@@ -24,8 +24,8 @@ export interface DynamoToolRelayConfig {
 }
 
 export interface DynamoRequestTraceAgentContext {
-	trajectory_id: string;
-	parent_trajectory_id?: string;
+	session_id: string;
+	parent_session_id?: string;
 }
 
 type ToolTraceEventType = "tool_start" | "tool_end" | "tool_error";
@@ -81,12 +81,12 @@ export function readDynamoToolRelayConfig(env: DynamoToolRelayEnvironment = proc
 	};
 }
 
-export function buildToolAgentContext(config: DynamoConfig, sessionId: string | undefined) {
-	const trajectoryId = config.trajectoryId ?? sessionId;
-	if (!trajectoryId) return undefined;
+export function buildToolAgentContext(config: DynamoConfig, runtimeSessionId: string | undefined) {
+	const sessionId = config.sessionId ?? runtimeSessionId;
+	if (!sessionId) return undefined;
 	return {
-		trajectory_id: trajectoryId,
-		...(config.parentTrajectoryId ? { parent_trajectory_id: config.parentTrajectoryId } : {}),
+		session_id: sessionId,
+		...(config.parentSessionId ? { parent_session_id: config.parentSessionId } : {}),
 	};
 }
 

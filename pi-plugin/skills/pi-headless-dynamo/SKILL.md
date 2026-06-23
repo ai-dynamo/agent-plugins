@@ -1,6 +1,6 @@
 ---
 name: pi-headless-dynamo
-description: Drive the real Pi CLI headlessly against a Dynamo or OpenAI-compatible endpoint for pi-dynamo-provider validation. Use when testing Pi provider installs, trajectory header tracing, Pi subagent runs, saved traces, or parent/child trajectory behavior without manually faking Pi or pi-subagents internals.
+description: Drive the real Pi CLI headlessly against a Dynamo or OpenAI-compatible endpoint for pi-dynamo-provider validation. Use when testing Pi provider installs, session header tracing, Pi subagent runs, saved traces, or parent/child session behavior without manually faking Pi or pi-subagents internals.
 ---
 
 # Pi Headless Dynamo
@@ -29,7 +29,7 @@ Before launching Pi, verify the endpoint and model:
 curl -sf http://127.0.0.1:18083/v1/models
 ```
 
-For trajectory-native release evidence, the endpoint must use Dynamo
+For session-native release evidence, the endpoint must use Dynamo
 `--router-mode kv` and an SGLang worker with `--enable-session-radix-cache`.
 The local launcher prints the exact Pi environment and trace path; prefer that
 block over hand-rolled env.
@@ -65,7 +65,7 @@ Control that process through its PTY like a user:
 Do not kill Pi to end a lifecycle run unless it is hung and the failure is the
 thing being tested.
 
-When `DYN_REQUEST_TRACE=1`, the provider stamps `x-dynamo-trajectory-id` on LLM requests. Normal root turns use Pi's own session id as the trajectory id; pi-subagents children derive their id from `PI_SUBAGENT_*`.
+When `DYN_REQUEST_TRACE=1`, the provider stamps `x-dynamo-session-id` on LLM requests. Normal root turns use Pi's own session id as the session id; pi-subagents children derive their id from `PI_SUBAGENT_*`.
 
 ## Drive A Lifecycle Run
 
@@ -164,11 +164,11 @@ nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv,noheader
 
 The lifecycle ordering to prove:
 
-1. Child LLM requests carry child trajectory ids.
-2. Parent-only turns still carry the parent trajectory id.
+1. Child LLM requests carry child session ids.
+2. Parent-only turns still carry the parent session id.
 3. The server is stopped and GPUs return to baseline.
 
-With Dynamo request-trace unification (#10701 and later), trajectory identity
+With Dynamo request-trace unification (#10701 and later), session identity
 lives on the same `dynamo.request.trace.v1` rows as request metrics. If trace
 rows are present but `agent_context_rows` is zero, check that Pi had
 `DYN_REQUEST_TRACE=1` and that the provider package was installed from this repo.

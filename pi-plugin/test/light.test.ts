@@ -6,7 +6,7 @@ import { createAssistantMessageEventStream, type Context, type Model, type Simpl
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import {
-	applySubagentTrajectoryBridge,
+	applySubagentSessionBridge,
 	buildToolAgentContext,
 	createDynamoStreamSimple,
 	DEFAULT_DYNAMO_BASE_URL,
@@ -54,11 +54,13 @@ function createContext(sessionId: string): ExtensionContext {
 }
 
 describe("light provider", () => {
-	it("keeps Pi sessionId and adds Dynamo trajectory headers", () => {
+	it("keeps Pi sessionId and adds Dynamo session headers", () => {
+		let capturedModel: Model<"openai-completions"> | undefined;
 		let capturedOptions: SimpleStreamOptions | undefined;
 		const streamSimple = createDynamoStreamSimple(
 			config,
-			(_model, _context, options) => {
+			(model, _context, options) => {
+				capturedModel = model;
 				capturedOptions = options;
 				return createAssistantMessageEventStream();
 			},
@@ -68,21 +70,22 @@ describe("light provider", () => {
 		streamSimple(model, context, { sessionId: "pi-session" });
 
 		expect(capturedOptions?.sessionId).toBe("pi-session");
+		expect(capturedModel?.compat?.sendSessionAffinityHeaders).toBeUndefined();
 		expect(capturedOptions?.headers).toEqual({
 			"x-request-id": "request-1",
-			"x-dynamo-trajectory-id": "pi-session",
+			"x-dynamo-session-id": "pi-session",
 		});
 	});
 
-	it("bridges pi-subagents through Dynamo trajectory headers", () => {
+	it("bridges pi-subagents through Dynamo session headers", () => {
 		const env: NodeJS.ProcessEnv = {
 			DYN_REQUEST_TRACE: "1",
-			DYN_AGENT_TRAJECTORY_ID: "parent",
+			DYN_AGENT_SESSION_ID: "parent",
 			PI_SUBAGENT_CHILD: "1",
 			PI_SUBAGENT_RUN_ID: "run",
 			PI_SUBAGENT_CHILD_AGENT: "researcher",
 		};
-		expect(applySubagentTrajectoryBridge(env)).toBe(true);
+		expect(applySubagentSessionBridge(env)).toBe(true);
 		const cfg = readDynamoConfig(env);
 
 		let capturedOptions: SimpleStreamOptions | undefined;
@@ -97,12 +100,30 @@ describe("light provider", () => {
 
 		expect(capturedOptions?.sessionId).toBe("pi-session");
 		expect(capturedOptions?.headers).toMatchObject({
-			"x-dynamo-trajectory-id": "run:researcher:0",
-			"x-dynamo-parent-trajectory-id": "parent",
+			"x-dynamo-session-id": "run:researcher:0",
+			"x-dynamo-parent-session-id": "parent",
 		});
 	});
 
-	it("emits trajectory-only ZMQ tool context", async () => {
+	it("does not self-parent child sessions", () => {
+		const env: NodeJS.ProcessEnv = {
+			DYN_REQUEST_TRACE: "1",
+			DYN_AGENT_SESSION_ID: "run:researcher:0",
+			DYN_AGENT_PARENT_SESSION_ID: "run:researcher:0",
+			PI_SUBAGENT_CHILD: "1",
+			PI_SUBAGENT_RUN_ID: "run",
+			PI_SUBAGENT_CHILD_AGENT: "researcher",
+		};
+
+		expect(applySubagentSessionBridge(env)).toBe(true);
+		const cfg = readDynamoConfig(env);
+
+		expect(cfg.sessionId).toBe("run:researcher:0");
+		expect(cfg.parentSessionId).toBeUndefined();
+		expect(env.DYN_AGENT_PARENT_SESSION_ID).toBeUndefined();
+	});
+
+	it("emits session-only ZMQ tool context", async () => {
 		const socket = new FakeToolEventSocket();
 		const publisher = new DynamoToolEventPublisher(
 			{ endpoint: "tcp://127.0.0.1:20390", topic: "tools", queueCapacity: 10 },
@@ -115,7 +136,7 @@ describe("light provider", () => {
 		await publisher.flush();
 
 		const record = decode(socket.sent[0]?.[2] ?? Buffer.alloc(0)) as DynamoRequestTraceRecord;
-		expect(buildToolAgentContext(config, "pi-session")).toEqual({ trajectory_id: "pi-session" });
-		expect(record.agent_context).toEqual({ trajectory_id: "pi-session" });
+		expect(buildToolAgentContext(config, "pi-session")).toEqual({ session_id: "pi-session" });
+		expect(record.agent_context).toEqual({ session_id: "pi-session" });
 	});
 });

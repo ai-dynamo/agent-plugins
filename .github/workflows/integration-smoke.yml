@@ -3,7 +3,7 @@
 
 name: integration-smoke
 
-# End-to-end check that x-dynamo-trajectory-id emitted by this package
+# End-to-end check that x-dynamo-session-id emitted by this package
 # round-trips through Dynamo's actual frontend + mocker into the request trace
 # sink. Builds Dynamo from ai-dynamo/dynamo@main on every run — published
 # wheels lag behind features (e.g. the agent_trace sink), so we need source
