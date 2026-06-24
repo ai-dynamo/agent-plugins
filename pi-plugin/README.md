@@ -8,6 +8,9 @@ pi --model dynamo/<model-id>
 
 With one switch (`DYN_REQUEST_TRACE=1`) it also stamps Dynamo session headers, gives each pi-subagent its own session id, and can relay Pi tool events into the trace — all without patching `pi-mono`.
 
+Tested with Pi `0.72.1`. CI also type-checks, tests, and builds against the
+latest published Pi packages.
+
 ## What it does
 
 - **Model provider** — registers `dynamo`, discovers models from `/v1/models` (falls back to `dynamo/default`), and streams via Pi's OpenAI-compatible path.

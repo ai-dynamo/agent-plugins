@@ -1,0 +1,19 @@
+{
+  "name": "@ai-dynamo/openclaw-provider",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenClaw provider plugin for NVIDIA Dynamo",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/plugin.test.js",
+    "test:runtime": "node test/runtime-smoke.mjs"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.6.8"
+    }
+  }
+}
