@@ -1,0 +1,17 @@
+{
+  "id": "dynamo",
+  "name": "Dynamo Provider",
+  "description": "Adds OpenClaw session identity to requests sent through a Dynamo provider.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": false
+  },
+  "providers": [
+    "dynamo"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
