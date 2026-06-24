@@ -1,4 +1,4 @@
-name: dynamo_trajectory
+name: dynamo_session
 version: "0.1.0"
-description: "Optional Dynamo trajectory header injection for Hermes."
+description: "Optional Dynamo session header injection for Hermes."
 author: NVIDIA

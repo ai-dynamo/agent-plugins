@@ -15,9 +15,9 @@ import type { ProviderConfig, ProviderModelConfig } from "@mariozechner/pi-codin
 import {
 	envValue,
 	isTruthyEnv,
-	resolveTrajectoryContext,
-	type DynamoTrajectoryEnvironment,
-} from "./trajectory.js";
+	resolveSessionContext,
+	type DynamoSessionEnvironment,
+} from "./session.js";
 
 export const DYNAMO_PROVIDER_ID = "dynamo";
 export const DYNAMO_API = "dynamo-openai-completions" satisfies Api;
@@ -25,7 +25,7 @@ export const DEFAULT_DYNAMO_BASE_URL = "http://127.0.0.1:8000/v1";
 export const DEFAULT_DYNAMO_API_KEY = "dynamo-local";
 export const DEFAULT_DYNAMO_MODEL_ID = "default";
 
-export interface DynamoEnvironment extends DynamoTrajectoryEnvironment {
+export interface DynamoEnvironment extends DynamoSessionEnvironment {
 	DYNAMO_BASE_URL?: string;
 	OPENAI_BASE_URL?: string;
 	DYNAMO_API_KEY?: string;
@@ -35,8 +35,8 @@ export interface DynamoConfig {
 	baseUrl: string;
 	apiKey: string;
 	traceEnabled: boolean;
-	trajectoryId?: string;
-	parentTrajectoryId?: string;
+	sessionId?: string;
+	parentSessionId?: string;
 }
 
 interface OpenAIModelsResponse {
@@ -64,13 +64,13 @@ export function normalizeDynamoBaseUrl(rawBaseUrl: string | undefined): string {
 }
 
 export function readDynamoConfig(env: DynamoEnvironment = process.env): DynamoConfig {
-	const trajectory = resolveTrajectoryContext(env);
+	const session = resolveSessionContext(env);
 	return {
 		baseUrl: normalizeDynamoBaseUrl(envValue(env, "DYNAMO_BASE_URL") ?? envValue(env, "OPENAI_BASE_URL")),
 		apiKey: envValue(env, "DYNAMO_API_KEY") ?? DEFAULT_DYNAMO_API_KEY,
 		traceEnabled: isTruthyEnv(envValue(env, "DYN_REQUEST_TRACE")),
-		...(trajectory.trajectoryId ? { trajectoryId: trajectory.trajectoryId } : {}),
-		...(trajectory.parentTrajectoryId ? { parentTrajectoryId: trajectory.parentTrajectoryId } : {}),
+		...(session.sessionId ? { sessionId: session.sessionId } : {}),
+		...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
 	};
 }
 
@@ -81,7 +81,7 @@ function hasHeader(headers: Record<string, string>, target: string): boolean {
 
 export function buildDynamoHeaders(
 	headers: Record<string, string> | undefined,
-	config: Pick<DynamoConfig, "traceEnabled" | "trajectoryId" | "parentTrajectoryId">,
+	config: Pick<DynamoConfig, "traceEnabled" | "sessionId" | "parentSessionId">,
 	runtimeSessionId: string | undefined,
 	createRequestId: () => string = randomUUID,
 ): Record<string, string> {
@@ -89,12 +89,12 @@ export function buildDynamoHeaders(
 	if (!hasHeader(nextHeaders, "x-request-id")) nextHeaders["x-request-id"] = createRequestId();
 	if (!config.traceEnabled) return nextHeaders;
 
-	const trajectoryId = config.trajectoryId ?? runtimeSessionId;
-	if (trajectoryId && !hasHeader(nextHeaders, "x-dynamo-trajectory-id")) {
-		nextHeaders["x-dynamo-trajectory-id"] = trajectoryId;
+	const sessionId = config.sessionId ?? runtimeSessionId;
+	if (sessionId && !hasHeader(nextHeaders, "x-dynamo-session-id")) {
+		nextHeaders["x-dynamo-session-id"] = sessionId;
 	}
-	if (config.parentTrajectoryId && !hasHeader(nextHeaders, "x-dynamo-parent-trajectory-id")) {
-		nextHeaders["x-dynamo-parent-trajectory-id"] = config.parentTrajectoryId;
+	if (config.parentSessionId && !hasHeader(nextHeaders, "x-dynamo-parent-session-id")) {
+		nextHeaders["x-dynamo-parent-session-id"] = config.parentSessionId;
 	}
 	return nextHeaders;
 }
@@ -107,7 +107,6 @@ const dynamoOpenAICompat = {
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
 	supportsLongCacheRetention: false,
-	sendSessionAffinityHeaders: true,
 } satisfies OpenAICompletionsCompat;
 
 export function createDynamoModels(modelIds: string[], baseUrl: string): ProviderModelConfig[] {

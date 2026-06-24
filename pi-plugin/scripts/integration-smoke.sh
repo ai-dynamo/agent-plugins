@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Start a Dynamo frontend + mocker worker against a known-good Dynamo version,
-# then run test/integration/smoke.mjs which asserts that x-dynamo-trajectory-id
-# becomes trajectory identity in the trace sink. Tears down processes on exit.
+# then run test/integration/smoke.mjs which asserts that x-dynamo-session-id
+# becomes session identity in the trace sink. Tears down processes on exit.
 #
 # Required env:
 #   DYNAMO_TEST_MODEL_ID  HuggingFace model id for the mocker tokenizer

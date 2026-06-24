@@ -12,14 +12,14 @@ PLUGIN_PATH = pathlib.Path(__file__).resolve().parents[1] / "__init__.py"
 
 
 def load_plugin():
-    spec = importlib.util.spec_from_file_location("dynamo_trajectory_plugin", PLUGIN_PATH)
+    spec = importlib.util.spec_from_file_location("dynamo_session_plugin", PLUGIN_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
 
 
-class DynamoTrajectoryPluginTest(unittest.TestCase):
+class DynamoSessionPluginTest(unittest.TestCase):
     def test_pre_api_request_patches_openai_client_creation(self):
         plugin = load_plugin()
         calls = []
@@ -52,7 +52,7 @@ class DynamoTrajectoryPluginTest(unittest.TestCase):
         self.assertEqual(calls[0][0], "pre_api_request")
         self.assertEqual(result["default_headers"]["x-test"], "1")
         self.assertEqual(
-            result["default_headers"]["x-dynamo-trajectory-id"],
+            result["default_headers"]["x-dynamo-session-id"],
             "hermes-session",
         )
 

@@ -3,7 +3,7 @@
 
 name: integration-smoke
 
-# End-to-end check that x-dynamo-trajectory-id emitted by this package
+# End-to-end check that x-dynamo-session-id emitted by this package
 # round-trips through Dynamo's actual frontend + mocker into the request trace
 # sink. Builds Dynamo from ai-dynamo/dynamo@main on every run — published
 # wheels lag behind features (e.g. the agent_trace sink), so we need source
@@ -65,6 +65,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Test Hermes plugin
+        run: python3 -m unittest discover -s hermes-plugin/tests
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master

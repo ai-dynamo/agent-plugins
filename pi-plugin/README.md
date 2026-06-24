@@ -6,16 +6,17 @@ A Pi extension that registers a `dynamo` provider backed by [Dynamo](https://git
 pi --model dynamo/<model-id>
 ```
 
-With one switch (`DYN_REQUEST_TRACE=1`) it also stamps Dynamo trajectory headers, gives each pi-subagent its own trajectory id, and can relay Pi tool events into the trace — all without patching `pi-mono`.
+With one switch (`DYN_REQUEST_TRACE=1`) it also stamps Dynamo session headers, gives each pi-subagent its own session id, and can relay Pi tool events into the trace — all without patching `pi-mono`.
 
 ## What it does
 
 - **Model provider** — registers `dynamo`, discovers models from `/v1/models` (falls back to `dynamo/default`), and streams via Pi's OpenAI-compatible path.
-- **Trajectory headers** — adds `x-dynamo-trajectory-id` and optional parent headers so Dynamo can attribute each LLM request as a trajectory in its trace.
-- **Subagent trajectory ids** — gives each [pi-subagents](https://github.com/nicobailon/pi-subagents) child its own trajectory id. See [Subagent trajectory ids](#subagent-trajectory-ids).
+- **Session headers** — adds `x-dynamo-session-id` and optional parent headers so Dynamo can attribute each LLM request as a session in its trace.
+- **Subagent session ids** — gives each [pi-subagents](https://github.com/nicobailon/pi-subagents) child its own session id. See [Subagent session ids](#subagent-session-ids).
 - **Tool-event relay** — optionally pushes Pi `tool_start` / `tool_end` / `tool_error` events to Dynamo over ZMQ so one trace shows LLM spans and tool spans together.
 
 Everything but the bare model provider is gated by the `DYN_REQUEST_TRACE` master switch and is off by default.
+Session headers carry identity only; they do not activate sticky or session-aware routing.
 
 ## Install
 
@@ -35,31 +36,31 @@ Point Pi at a running Dynamo endpoint:
 ```bash
 export DYNAMO_BASE_URL=http://127.0.0.1:8000/v1
 export DYNAMO_API_KEY=dummy        # local Dynamo usually ignores this; defaults to dynamo-local
-export DYN_REQUEST_TRACE=1         # opt into trajectory tracing + optional tool relay
+export DYN_REQUEST_TRACE=1         # opt into session tracing + optional tool relay
 
 pi --model dynamo/<model-id> -p "Reply exactly ok."
 ```
 
 That's the whole required setup. Everything else is only set when you want to override it — see [Configuration](#configuration).
 
-## Subagent trajectory ids
+## Subagent session ids
 
-When `DYN_REQUEST_TRACE=1`, the provider preserves Pi's normal `sessionId` and adds explicit Dynamo trajectory headers.
+When `DYN_REQUEST_TRACE=1`, the provider preserves Pi's normal `sessionId` and adds explicit Dynamo session headers.
 
 ```mermaid
 sequenceDiagram
     participant Root as Root pi process
     participant Child as Subagent pi process
     participant Dynamo
-    Root->>Dynamo: x-dynamo-trajectory-id = S_root
-    Child->>Dynamo: x-dynamo-trajectory-id = T_child, parent = S_root
+    Root->>Dynamo: x-dynamo-session-id = S_root
+    Child->>Dynamo: x-dynamo-session-id = S_child, parent = S_root
 ```
 
-- The root `trajectory_id` is Pi's own `sessionId`.
-- The child `trajectory_id` is the subagent's own identity (`PI_SUBAGENT_RUN_ID:PI_SUBAGENT_CHILD_AGENT:PI_SUBAGENT_CHILD_INDEX`), so it needs no extra operator setup.
-- The provider sends those values as `x-dynamo-trajectory-id` and `x-dynamo-parent-trajectory-id`.
+- The root `session_id` is Pi's own `sessionId`.
+- The child `session_id` is the subagent's own identity (`PI_SUBAGENT_RUN_ID:PI_SUBAGENT_CHILD_AGENT:PI_SUBAGENT_CHILD_INDEX`), so it needs no extra operator setup.
+- The provider sends those values as `x-dynamo-session-id` and `x-dynamo-parent-session-id`.
 
-> ZMQ tool records can include parent/child **trajectory ids** when `DYN_AGENT_TRAJECTORY_ID` is set on the root. See [Trajectory linking](#trajectory-linking).
+> ZMQ tool records can include parent/child **session ids** when `DYN_AGENT_SESSION_ID` is set on the root. See [Session linking](#session-linking).
 
 ## Configuration
 
@@ -69,14 +70,14 @@ The only thing you must set is the connection (`DYNAMO_BASE_URL`) and, to enable
 | --- | --- | --- |
 | `DYNAMO_BASE_URL` | `http://127.0.0.1:8000/v1` | Dynamo endpoint root (falls back to `OPENAI_BASE_URL`). |
 | `DYNAMO_API_KEY` | `dynamo-local` | Bearer token. |
-| `DYN_REQUEST_TRACE` | off | **Master switch.** When truthy (`1`/`true`/`yes`/`on`), enables Dynamo trajectory headers and the tool relay. |
-| `DYN_AGENT_TRAJECTORY_ID` | unset | Optional parent trajectory seed for [trajectory linking](#trajectory-linking) in subagents. |
-| `DYN_AGENT_PARENT_TRAJECTORY_ID` | unset | Parent trajectory; set manually to override the bridge. |
+| `DYN_REQUEST_TRACE` | off | **Master switch.** When truthy (`1`/`true`/`yes`/`on`), enables Dynamo session headers and the tool relay. |
+| `DYN_AGENT_SESSION_ID` | unset | Optional parent session seed for [session linking](#session-linking) in subagents. |
+| `DYN_AGENT_PARENT_SESSION_ID` | unset | Parent session; set manually to override the bridge. |
 | `DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` | unset | Dynamo-bound ZMQ PULL endpoint for the tool relay. |
 
-`PI_SUBAGENT_CHILD` / `PI_SUBAGENT_RUN_ID` / `PI_SUBAGENT_CHILD_AGENT` / `PI_SUBAGENT_CHILD_INDEX` are **read, never set** — pi-subagents populates them and the provider uses them to derive the child `trajectory_id` and parent link.
+`PI_SUBAGENT_CHILD` / `PI_SUBAGENT_RUN_ID` / `PI_SUBAGENT_CHILD_AGENT` / `PI_SUBAGENT_CHILD_INDEX` are **read, never set** — pi-subagents populates them and the provider uses them to derive the child `session_id` and parent link.
 
-With `DYN_REQUEST_TRACE` on, the provider does not mutate request payloads. It adds Dynamo trajectory headers and `x-request-id` when absent.
+With `DYN_REQUEST_TRACE` on, the provider does not mutate request payloads. It adds Dynamo session headers and `x-request-id` when absent.
 
 <details>
 <summary>Tool-event wire format</summary>
@@ -90,9 +91,9 @@ When a tool-event endpoint is set, Pi connects a ZMQ PUSH socket and sends one m
 The record uses Dynamo's `dynamo.request.trace.v1` schema (`event_type`, `event_source`, `agent_context`, and a `tool` object with timing/status). Dynamo owns the PULL bind side, so multiple Pi processes and subagents can all connect as producers. Terminal `tool_end` / `tool_error` records are self-contained.
 </details>
 
-## Trajectory linking
+## Session linking
 
-The provider keeps parent and child trajectory ids distinct for ZMQ tool records. When a pi-subagents child inherits the parent's `DYN_AGENT_TRAJECTORY_ID`, the provider reinterprets it as the child's `parent_trajectory_id` and synthesizes a fresh child `trajectory_id` (`runId:childAgent:childIndex`), mutating `process.env` so nested chains stay attributable. Setting `DYN_AGENT_PARENT_TRAJECTORY_ID` manually overrides the parent link. If you don't set `DYN_AGENT_TRAJECTORY_ID` at all, every subagent still gets its own child trajectory id — only the explicit parent-to-child link is absent.
+The provider keeps parent and child session ids distinct for ZMQ tool records. When a pi-subagents child inherits the parent's `DYN_AGENT_SESSION_ID`, the provider reinterprets it as the child's `parent_session_id` and synthesizes a fresh child `session_id` (`runId:childAgent:childIndex`), mutating `process.env` so nested chains stay attributable. Setting `DYN_AGENT_PARENT_SESSION_ID` manually overrides the parent link. If you don't set `DYN_AGENT_SESSION_ID` at all, every subagent still gets its own child session id — only the explicit parent-to-child link is absent.
 
 ## Local Dynamo
 
@@ -122,13 +123,13 @@ npm run test    # vitest
 npm run build   # -> dist/
 ```
 
-`scripts/integration-smoke.sh` boots Dynamo's frontend + mocker and asserts `x-dynamo-trajectory-id` becomes `trajectory_id` in the trace; it is the out-of-band end-to-end check.
+`scripts/integration-smoke.sh` boots Dynamo's frontend + mocker and asserts `x-dynamo-session-id` becomes `session_id` in the trace; it is the out-of-band end-to-end check.
 
 ## Troubleshooting
 
 - **`/v1/models` empty** — wait for the backend to load; confirm frontend and worker share the same discovery/request/event planes and `DYN_FILE_KV`.
 - **Model unknown** — `curl "$DYNAMO_BASE_URL/models"` and use the returned id as `dynamo/<id>`; restart Pi if discovery failed before Dynamo was ready.
-- **No agent_context in trace rows** — make sure `DYN_REQUEST_TRACE` is set and Dynamo is new enough to map `x-dynamo-trajectory-id`.
+- **No agent_context in trace rows** — make sure `DYN_REQUEST_TRACE` is set and Dynamo is new enough to map `x-dynamo-session-id`.
 - **Tool spans missing** — set a tool-event endpoint on both sides and confirm the run actually used tools.
 
 ## Scope

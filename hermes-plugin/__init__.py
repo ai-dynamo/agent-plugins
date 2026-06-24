@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Inject Hermes session IDs as Dynamo trajectory headers."""
+"""Inject Hermes session IDs as Dynamo session headers."""
 
-HEADER = "x-dynamo-trajectory-id"
-_PATCHED_ATTR = "_dynamo_trajectory_headers_patched"
+HEADER = "x-dynamo-session-id"
+_PATCHED_ATTR = "_dynamo_session_headers_patched"
 
 
 def register(ctx) -> None:
