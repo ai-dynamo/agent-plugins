@@ -98,17 +98,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-
       - name: Checkout Hermes ${{ matrix.hermes }}
         run: |
           git clone --filter=blob:none --no-checkout https://github.com/NousResearch/hermes-agent.git hermes-agent
           git -C hermes-agent fetch --depth 1 origin "${{ matrix.hermes }}"
           git -C hermes-agent checkout --detach FETCH_HEAD
           git -C hermes-agent log -1 --oneline
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: hermes-agent/uv.lock
 
       - name: Install Hermes
         run: uv sync --project hermes-agent --no-dev
