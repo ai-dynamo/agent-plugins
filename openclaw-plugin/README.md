@@ -1,7 +1,8 @@
 # OpenClaw Dynamo Provider
 
 OpenClaw provider plugin that copies the current OpenClaw `sessionId` into
-`x-dynamo-session-id` on each request sent through the `dynamo` provider.
+`x-dynamo-session-id` on each request sent through the `dynamo` provider. Native
+subagents also send their immediate parent's ID in `x-dynamo-parent-session-id`.
 
 ## Install
 
