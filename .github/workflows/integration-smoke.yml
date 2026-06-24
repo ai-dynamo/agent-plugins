@@ -70,7 +70,14 @@ jobs:
         run: python3 -m unittest discover -s hermes-plugin/tests
 
       - name: Test OpenClaw plugin
-        run: npm test --prefix openclaw-plugin
+        run: |
+          npm test --prefix openclaw-plugin
+          npm install --global openclaw@latest
+          state_dir="$(mktemp -d)"
+          OPENCLAW_STATE_DIR="$state_dir" openclaw plugins install --link "$GITHUB_WORKSPACE/openclaw-plugin"
+          OPENCLAW_STATE_DIR="$state_dir" openclaw plugins enable dynamo
+          OPENCLAW_STATE_DIR="$state_dir" openclaw plugins inspect dynamo --json |
+            jq -e '.plugin.status == "loaded" and (.plugin.providerIds | index("dynamo") != null)'
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master
