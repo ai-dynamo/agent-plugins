@@ -4,9 +4,9 @@ OpenClaw provider plugin that copies the current OpenClaw `sessionId` into
 `x-dynamo-session-id` on each request sent through the `dynamo` provider. Native
 subagents also send their immediate parent's ID in `x-dynamo-parent-session-id`.
 
-Live Dynamo integration is tested with OpenClaw `2026.6.8`. CI also installs
-OpenClaw's latest release and verifies that the plugin loads and registers the
-`dynamo` provider.
+Live Dynamo integration is tested with OpenClaw `2026.6.8`. CI runs the real
+OpenClaw agent loop on both `2026.6.8` and the latest release, forcing a native
+subagent and asserting stable root plus exact child/parent request headers.
 
 ## Install
 

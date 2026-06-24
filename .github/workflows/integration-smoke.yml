@@ -15,6 +15,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    - cron: "17 8 * * *"
   workflow_dispatch:
     inputs:
       dynamo_ref:
@@ -30,6 +32,126 @@ env:
   DYNAMO_TEST_MODEL_ID: "Qwen/Qwen3-0.6B"
 
 jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: pi-plugin/package-lock.json
+
+      - name: Test Pi plugin
+        run: |
+          npm ci --prefix pi-plugin
+          npm run check --prefix pi-plugin
+          npm test --prefix pi-plugin
+          npm run build --prefix pi-plugin
+
+      - name: Test Hermes plugin
+        run: python3 -m unittest discover -s hermes-plugin/tests -p 'test_*.py'
+
+      - name: Test OpenClaw plugin
+        run: npm test --prefix openclaw-plugin
+
+  pi-latest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: pi-plugin/package-lock.json
+
+      - name: Test latest Pi API
+        run: |
+          npm ci --prefix pi-plugin
+          npm install --prefix pi-plugin --no-save \
+            @mariozechner/pi-ai@latest \
+            @mariozechner/pi-coding-agent@latest
+          node -e 'for (const name of ["pi-ai", "pi-coding-agent"]) { const p = require(`./pi-plugin/node_modules/@mariozechner/${name}/package.json`); console.log(`${name} ${p.version}`) }'
+          npm run check --prefix pi-plugin
+          npm test --prefix pi-plugin
+          npm run build --prefix pi-plugin
+
+  hermes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        hermes: ["a7983d5ad768551508667e8c708e13def7ee28ab", "main"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Checkout Hermes ${{ matrix.hermes }}
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/NousResearch/hermes-agent.git hermes-agent
+          git -C hermes-agent fetch --depth 1 origin "${{ matrix.hermes }}"
+          git -C hermes-agent checkout --detach FETCH_HEAD
+          git -C hermes-agent log -1 --oneline
+
+      - name: Install Hermes
+        run: uv sync --project hermes-agent --no-dev
+
+      - name: Test real plugin loader and AIAgent contract
+        run: |
+          state_dir=$(mktemp -d)
+          mkdir -p "$state_dir/plugins"
+          ln -s "$GITHUB_WORKSPACE/hermes-plugin" "$state_dir/plugins/dynamo_session"
+          HERMES_HOME="$state_dir" uv run --project hermes-agent --no-sync \
+            hermes plugins enable dynamo_session
+          HERMES_HOME="$state_dir" uv run --project hermes-agent --no-sync \
+            hermes plugins list --enabled --no-bundled --plain | grep -q dynamo_session
+          HERMES_HOME="$state_dir" uv run --project hermes-agent --no-sync \
+            python "$GITHUB_WORKSPACE/hermes-plugin/tests/upstream_smoke.py"
+
+  openclaw:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        openclaw: ["2026.6.8", "latest"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install OpenClaw ${{ matrix.openclaw }}
+        run: npm install --global openclaw@${{ matrix.openclaw }}
+
+      - name: Test plugin
+        env:
+          OPENCLAW_TEST_VERSION: ${{ matrix.openclaw }}
+        run: |
+          openclaw --version
+          npm run test:runtime --prefix openclaw-plugin
+
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -65,19 +187,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Test Hermes plugin
-        run: python3 -m unittest discover -s hermes-plugin/tests
-
-      - name: Test OpenClaw plugin
-        run: |
-          npm test --prefix openclaw-plugin
-          npm install --global openclaw@latest
-          state_dir="$(mktemp -d)"
-          OPENCLAW_STATE_DIR="$state_dir" openclaw plugins install --link "$GITHUB_WORKSPACE/openclaw-plugin"
-          OPENCLAW_STATE_DIR="$state_dir" openclaw plugins enable dynamo
-          OPENCLAW_STATE_DIR="$state_dir" openclaw plugins inspect dynamo --json |
-            jq -e '.plugin.status == "loaded" and (.plugin.providerIds | index("dynamo") != null)'
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master

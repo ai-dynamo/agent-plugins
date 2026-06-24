@@ -2,6 +2,9 @@
 
 Hermes plugin that copies the current Hermes `session_id` into Dynamo's `x-dynamo-session-id` request header.
 
+Tested with Hermes `0.17.0` at `a7983d5`. CI also validates the plugin against
+the latest Hermes `main` using the real plugin loader and `AIAgent` class.
+
 ## Install
 
 ```bash

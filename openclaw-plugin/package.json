@@ -5,7 +5,8 @@
   "description": "OpenClaw provider plugin for NVIDIA Dynamo",
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test test/plugin.test.js",
+    "test:runtime": "node test/runtime-smoke.mjs"
   },
   "openclaw": {
     "extensions": [
