@@ -35,8 +35,8 @@ export interface DynamoRequestTraceRecord {
 	schema: "dynamo.request.trace.v1";
 	event_type: ToolTraceEventType;
 	event_time_unix_ms: number;
-	event_source: "harness";
-	agent_context: DynamoRequestTraceAgentContext;
+	session_id: string;
+	parent_session_id?: string;
 	tool: {
 		tool_call_id: string;
 		tool_class: string;
@@ -202,8 +202,8 @@ export class DynamoToolEventRelay {
 			schema: "dynamo.request.trace.v1",
 			event_type: "tool_start",
 			event_time_unix_ms: startedAtUnixMs,
-			event_source: "harness",
-			agent_context: agentContext,
+			session_id: agentContext.session_id,
+			...(agentContext.parent_session_id ? { parent_session_id: agentContext.parent_session_id } : {}),
 			tool: {
 				tool_call_id: event.toolCallId,
 				tool_class: toolClass,
@@ -229,8 +229,8 @@ export class DynamoToolEventRelay {
 			schema: "dynamo.request.trace.v1",
 			event_type: event.isError ? "tool_error" : "tool_end",
 			event_time_unix_ms: endedAtUnixMs,
-			event_source: "harness",
-			agent_context: agentContext,
+			session_id: agentContext.session_id,
+			...(agentContext.parent_session_id ? { parent_session_id: agentContext.parent_session_id } : {}),
 			tool: {
 				tool_call_id: event.toolCallId,
 				tool_class: start?.toolClass ?? getToolClass(event.toolName),

@@ -123,20 +123,26 @@ describe("light provider", () => {
 		expect(env.DYN_AGENT_PARENT_SESSION_ID).toBeUndefined();
 	});
 
-	it("emits session-only ZMQ tool context", async () => {
+	it("emits top-level session fields for ZMQ tool events", async () => {
 		const socket = new FakeToolEventSocket();
 		const publisher = new DynamoToolEventPublisher(
 			{ endpoint: "tcp://127.0.0.1:20390", topic: "tools", queueCapacity: 10 },
 			() => socket,
 		);
 		await publisher.start();
-		const relay = new DynamoToolEventRelay(config, publisher, () => 1000, () => 10);
+		const tracedConfig = { ...config, sessionId: "child", parentSessionId: "parent" };
+		const relay = new DynamoToolEventRelay(tracedConfig, publisher, () => 1000, () => 10);
 
 		relay.handleToolExecutionStart({ toolCallId: "call-1", toolName: "bash", args: {} }, createContext("pi-session"));
 		await publisher.flush();
 
 		const record = decode(socket.sent[0]?.[2] ?? Buffer.alloc(0)) as DynamoRequestTraceRecord;
-		expect(buildToolAgentContext(config, "pi-session")).toEqual({ session_id: "pi-session" });
-		expect(record.agent_context).toEqual({ session_id: "pi-session" });
+		expect(buildToolAgentContext(tracedConfig, "pi-session")).toEqual({
+			session_id: "child",
+			parent_session_id: "parent",
+		});
+		expect(record.session_id).toBe("child");
+		expect(record.parent_session_id).toBe("parent");
+		expect(record).not.toHaveProperty("agent_context");
 	});
 });
