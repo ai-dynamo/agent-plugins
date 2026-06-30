@@ -170,6 +170,43 @@ export function createDynamoStreamSimple(
 	};
 }
 
+export async function sendDynamoSessionFinal(
+	config: DynamoConfig,
+	modelId: string,
+	runtimeSessionId: string | undefined,
+	createRequestId: () => string = randomUUID,
+	fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+	const sessionId = config.sessionId ?? runtimeSessionId?.trim();
+	if (!config.traceEnabled || !sessionId) return false;
+
+	try {
+		const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
+			method: "POST",
+			headers: buildDynamoHeaders(
+				{
+					"content-type": "application/json",
+					authorization: `Bearer ${config.apiKey}`,
+					"x-dynamo-session-final": "true",
+				},
+				config,
+				sessionId,
+				createRequestId,
+			),
+			body: JSON.stringify({
+				model: modelId.trim() || DEFAULT_DYNAMO_MODEL_ID,
+				messages: [{ role: "user", content: "." }],
+				max_tokens: 1,
+				stream: false,
+			}),
+			signal: AbortSignal.timeout(5000),
+		});
+		return response.ok;
+	} catch {
+		return false;
+	}
+}
+
 export function createDynamoProviderConfig(config: DynamoConfig, models: ProviderModelConfig[]): ProviderConfig {
 	return {
 		name: "Dynamo",

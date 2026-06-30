@@ -15,6 +15,7 @@ import {
 	DynamoToolEventRelay,
 	DYNAMO_API,
 	readDynamoConfig,
+	sendDynamoSessionFinal,
 	type DynamoConfig,
 	type DynamoRequestTraceRecord,
 	type ToolEventSocket,
@@ -75,6 +76,31 @@ describe("light provider", () => {
 			"x-request-id": "request-1",
 			"x-dynamo-session-id": "pi-session",
 		});
+	});
+
+	it("sends a best-effort terminal session header", async () => {
+		let url: string | URL | Request | undefined;
+		let init: RequestInit | undefined;
+		const sent = await sendDynamoSessionFinal(
+			config,
+			"test-model",
+			"pi-session",
+			() => "request-final",
+			async (input, options) => {
+				url = input;
+				init = options;
+				return { ok: true } as Response;
+			},
+		);
+
+		expect(sent).toBe(true);
+		expect(url?.toString()).toBe(`${DEFAULT_DYNAMO_BASE_URL}/chat/completions`);
+		expect(init?.headers).toMatchObject({
+			"x-request-id": "request-final",
+			"x-dynamo-session-id": "pi-session",
+			"x-dynamo-session-final": "true",
+		});
+		expect(JSON.parse(init?.body as string)).toMatchObject({ model: "test-model", max_tokens: 1, stream: false });
 	});
 
 	it("bridges pi-subagents through Dynamo session headers", () => {
