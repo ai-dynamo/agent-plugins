@@ -65,7 +65,7 @@ Control that process through its PTY like a user:
 Do not kill Pi to end a lifecycle run unless it is hung and the failure is the
 thing being tested.
 
-When `DYN_REQUEST_TRACE=1`, the provider stamps `x-dynamo-session-id` on LLM requests. Normal root turns use Pi's own session id as the session id; pi-subagents children derive their id from `PI_SUBAGENT_*`.
+The provider stamps `x-dynamo-session-id` on every LLM request with a Pi session. Normal root turns use Pi's own session id; pi-subagents children derive theirs from `PI_SUBAGENT_*`. `DYN_REQUEST_TRACE=1` above enables the optional tool relay.
 
 ## Drive A Lifecycle Run
 
@@ -170,8 +170,8 @@ The lifecycle ordering to prove:
 
 With Dynamo request-trace unification (#10701 and later), session identity
 lives on the same `dynamo.request.trace.v1` rows as request metrics. If trace
-rows are present but `agent_context_rows` is zero, check that Pi had
-`DYN_REQUEST_TRACE=1` and that the provider package was installed from this repo.
+rows are present but `agent_context_rows` is zero, check Dynamo tracing and the
+provider package install.
 
 ## Troubleshooting
 
@@ -184,5 +184,5 @@ rows are present but `agent_context_rows` is zero, check that Pi had
   `/subagents-doctor` inside Pi and capture the exact parent/child session paths.
 - No trace rows means Dynamo was not launched with `DYN_REQUEST_TRACE=1` or the
   trace path points at the wrong run.
-- Trace rows without `agent_context` usually mean Pi was launched without
-  `DYN_REQUEST_TRACE=1` or with a stale provider install.
+- Trace rows without `agent_context` usually mean Dynamo tracing is disabled or
+  the provider install is stale.

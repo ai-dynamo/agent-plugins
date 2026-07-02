@@ -13,7 +13,7 @@ Repo layout:
 The Pi plugin has three source files under `pi-plugin/src/`:
 
 - `index.ts` — thin re-export of the light implementation.
-- `src/light/provider.ts` — config + streamSimple wrapper. Reads `DYN_REQUEST_TRACE`, `DYN_AGENT_*`, and `PI_SUBAGENT_*` env vars. When tracing is enabled, stamps `x-dynamo-session-id` / parent headers and leaves Pi `sessionId` untouched.
+- `src/light/provider.ts` — config + streamSimple wrapper. Reads `DYN_REQUEST_TRACE`, `DYN_AGENT_*`, and `PI_SUBAGENT_*` env vars. Always stamps `x-dynamo-session-id` / parent headers when Pi provides a session and leaves Pi `sessionId` untouched.
 - `src/light/tool-relay.ts` — ZMQ PUSH publisher for Pi tool events. Connects to a Dynamo-bound PULL endpoint. Wire format: `[topic, seq_be_u64, msgpack(RequestTraceRecord)]`.
 
 ## Build, test, check

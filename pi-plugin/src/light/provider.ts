@@ -81,13 +81,12 @@ function hasHeader(headers: Record<string, string>, target: string): boolean {
 
 export function buildDynamoHeaders(
 	headers: Record<string, string> | undefined,
-	config: Pick<DynamoConfig, "traceEnabled" | "sessionId" | "parentSessionId">,
+	config: Pick<DynamoConfig, "sessionId" | "parentSessionId">,
 	runtimeSessionId: string | undefined,
 	createRequestId: () => string = randomUUID,
 ): Record<string, string> {
 	const nextHeaders = { ...headers };
 	if (!hasHeader(nextHeaders, "x-request-id")) nextHeaders["x-request-id"] = createRequestId();
-	if (!config.traceEnabled) return nextHeaders;
 
 	const sessionId = config.sessionId ?? runtimeSessionId;
 	if (sessionId && !hasHeader(nextHeaders, "x-dynamo-session-id")) {

@@ -78,6 +78,23 @@ describe("light provider", () => {
 		});
 	});
 
+	it("adds session headers when Dynamo request tracing is disabled", () => {
+		let capturedOptions: SimpleStreamOptions | undefined;
+		createDynamoStreamSimple(
+			{ ...config, traceEnabled: false },
+			(_model, _context, options) => {
+				capturedOptions = options;
+				return createAssistantMessageEventStream();
+			},
+			() => "request-1",
+		)(model, context, { sessionId: "pi-session" });
+
+		expect(capturedOptions?.headers).toEqual({
+			"x-request-id": "request-1",
+			"x-dynamo-session-id": "pi-session",
+		});
+	});
+
 	it("sends a best-effort terminal session header", async () => {
 		let url: string | URL | Request | undefined;
 		let init: RequestInit | undefined;
@@ -105,7 +122,7 @@ describe("light provider", () => {
 
 	it("bridges pi-subagents through Dynamo session headers", () => {
 		const env: NodeJS.ProcessEnv = {
-			DYN_REQUEST_TRACE: "1",
+			DYN_REQUEST_TRACE: "0",
 			DYN_AGENT_SESSION_ID: "parent",
 			PI_SUBAGENT_CHILD: "1",
 			PI_SUBAGENT_RUN_ID: "run",
@@ -113,6 +130,7 @@ describe("light provider", () => {
 		};
 		expect(applySubagentSessionBridge(env)).toBe(true);
 		const cfg = readDynamoConfig(env);
+		expect(cfg.traceEnabled).toBe(false);
 
 		let capturedOptions: SimpleStreamOptions | undefined;
 		createDynamoStreamSimple(
