@@ -11,6 +11,11 @@ from harbor.agents.installed.pi import Pi
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
+# Written by a prepared task image. Records the baked Pi version so install()
+# can skip the runtime installation, which needs registry egress that sandboxed
+# environments often do not have.
+PREPARED_RUNTIME_MARKER = "/opt/pi-runtime.json"
+
 
 class DynamoPi(Pi):
     """Pi with the local Dynamo provider and Harbor's per-trial session ID."""
@@ -22,10 +27,33 @@ class DynamoPi(Pi):
         **kwargs,
     ):
         self._provider_path = provider_path
+        self._prepared = False
         super().__init__(*args, **kwargs)
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
+        marker = await self._read_prepared_runtime(environment)
+        if marker is not None:
+            baked = marker.get("pi")
+            if not isinstance(baked, str) or not baked:
+                raise RuntimeError(
+                    f"{PREPARED_RUNTIME_MARKER} does not record a Pi version"
+                )
+            if self._version and self._version != baked:
+                raise RuntimeError(
+                    f"Prepared image has Pi {baked} but the job pins {self._version}"
+                )
+            self._version = baked
+            self._prepared = True
+            self.logger.info("Using the prepared Pi %s runtime", baked)
+            await self._start_tool_event_tunnel(environment, install_package=False)
+            return
+
+        self.logger.warning(
+            "%s not found; installing Pi and the provider. This needs egress to "
+            "GitHub, nodejs.org, the npm registry, and the image's apt mirrors.",
+            PREPARED_RUNTIME_MARKER,
+        )
         await super().install(environment)
         await self.exec_as_agent(
             environment,
@@ -37,6 +65,51 @@ class DynamoPi(Pi):
                 'mkdir -p "$work"; cp -a "$provider"/. "$work"; '
                 'cd "$work"; npm ci; npm run build; pi install "$work"'
             ),
+        )
+        await self._start_tool_event_tunnel(environment, install_package=True)
+
+    async def _read_prepared_runtime(
+        self, environment: BaseEnvironment
+    ) -> dict | None:
+        """Return the prepared-runtime marker, or None when the image has none."""
+        result = await self.exec_as_agent(
+            environment,
+            command=f"cat {PREPARED_RUNTIME_MARKER} 2>/dev/null || true",
+        )
+        text = (result.stdout or "").strip()
+        if not text:
+            return None
+        try:
+            marker = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{PREPARED_RUNTIME_MARKER} is not valid JSON") from exc
+        if not isinstance(marker, dict):
+            raise RuntimeError(f"{PREPARED_RUNTIME_MARKER} must hold a JSON object")
+        return marker
+
+    async def _start_tool_event_tunnel(
+        self, environment: BaseEnvironment, install_package: bool
+    ) -> None:
+        """Start the TLS client for tool events when the job configures one.
+
+        The provider publishes tool events over plain ZMQ. Sandboxes whose
+        egress forwards only HTTP and TLS need stunnel to carry that stream to
+        Dynamo, so the job points this variable at a stunnel client config.
+        """
+        tunnel_config = self._get_env("DYN_REQUEST_TRACE_TOOL_EVENTS_STUNNEL_CONFIG")
+        if not tunnel_config:
+            return
+        command = f"stunnel {shlex.quote(tunnel_config)}"
+        if install_package:
+            command = (
+                "apt-get update -qq && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq stunnel4 && "
+                + command
+            )
+        await self.exec_as_root(
+            environment,
+            command=command,
+            timeout_sec=180 if install_package else None,
         )
 
     def _dynamo_env(self) -> dict[str, str]:
@@ -97,10 +170,12 @@ class DynamoPi(Pi):
                 f"--data {final_body} >/dev/null || exit 70; "
                 'exit "$rc"'
             )
+        # A prepared image puts node and pi on PATH; the installed path needs nvm.
+        shell_prefix = "" if self._prepared else ". ~/.nvm/nvm.sh; "
         await self.exec_as_agent(
             environment,
             command=(
-                ". ~/.nvm/nvm.sh; "
+                f"{shell_prefix}"
                 "pi --print --mode json --no-session "
                 f"--provider dynamo --model {shlex.quote(model_name)} {cli_flags}"
                 f"{shlex.quote(instruction)} "
