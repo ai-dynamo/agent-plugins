@@ -8,9 +8,13 @@ import { describe, expect, it } from "vitest";
 import {
 	applySubagentSessionBridge,
 	buildToolAgentContext,
+	createDynamoModels,
 	createDynamoStreamSimple,
 	DEFAULT_DYNAMO_BASE_URL,
+	DEFAULT_DYNAMO_CONTEXT_WINDOW,
+	DEFAULT_DYNAMO_MAX_TOKENS,
 	DEFAULT_DYNAMO_MODEL_ID,
+	discoverDynamoModels,
 	DynamoToolEventPublisher,
 	DynamoToolEventRelay,
 	DYNAMO_API,
@@ -205,5 +209,113 @@ describe("light provider", () => {
 		expect(record.session_id).toBe("child");
 		expect(record.parent_session_id).toBe("parent");
 		expect(record).not.toHaveProperty("agent_context");
+	});
+});
+
+describe("model limits", () => {
+	const noEnv = {};
+
+	function modelsResponse(data: unknown): typeof fetch {
+		return async () => ({ ok: true, json: async () => ({ data }) }) as Response;
+	}
+
+	it("falls back to the defaults when nothing is configured", () => {
+		const [created] = createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, new Map(), noEnv);
+
+		expect(created).toMatchObject({
+			id: "served",
+			contextWindow: DEFAULT_DYNAMO_CONTEXT_WINDOW,
+			maxTokens: DEFAULT_DYNAMO_MAX_TOKENS,
+		});
+	});
+
+	it("uses the advertised context window before the default", () => {
+		const served = new Map([["served", 40960]]);
+		const [created] = createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, served, noEnv);
+
+		expect(created?.contextWindow).toBe(40960);
+		expect(created?.maxTokens).toBe(DEFAULT_DYNAMO_MAX_TOKENS);
+	});
+
+	it("uses the explicit overrides before the advertised values", () => {
+		const served = new Map([["served", 40960]]);
+		const env = { DYNAMO_CONTEXT_WINDOW: " 65536 ", DYNAMO_MAX_TOKENS: "4096" };
+		const [created] = createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, served, env);
+
+		expect(created?.contextWindow).toBe(65536);
+		expect(created?.maxTokens).toBe(4096);
+	});
+
+	it("treats a blank override as unset", () => {
+		const env = { DYNAMO_CONTEXT_WINDOW: "", DYNAMO_MAX_TOKENS: "   " };
+		const [created] = createDynamoModels([], DEFAULT_DYNAMO_BASE_URL, new Map(), env);
+
+		expect(created).toMatchObject({
+			id: DEFAULT_DYNAMO_MODEL_ID,
+			contextWindow: DEFAULT_DYNAMO_CONTEXT_WINDOW,
+			maxTokens: DEFAULT_DYNAMO_MAX_TOKENS,
+		});
+	});
+
+	it("rejects overrides that are not positive integers", () => {
+		for (const value of ["lots", "0", "-1", "1.5"]) {
+			expect(() => createDynamoModels([], DEFAULT_DYNAMO_BASE_URL, new Map(), { DYNAMO_MAX_TOKENS: value })).toThrow(
+				/DYNAMO_MAX_TOKENS must be a positive integer/,
+			);
+		}
+		expect(() =>
+			createDynamoModels([], DEFAULT_DYNAMO_BASE_URL, new Map(), { DYNAMO_CONTEXT_WINDOW: "wide" }),
+		).toThrow(/DYNAMO_CONTEXT_WINDOW must be a positive integer/);
+	});
+
+	it("rejects an output cap at or above the context window", () => {
+		const served = new Map([["served", 8192]]);
+
+		expect(() => createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, served, noEnv)).toThrow(
+			/max tokens 8192 must be below the context window 8192/,
+		);
+		expect(() =>
+			createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, new Map(), { DYNAMO_MAX_TOKENS: "200000" }),
+		).toThrow(/max tokens 200000 must be below the context window 128000/);
+	});
+
+	it("reads advertised context windows from the models list", async () => {
+		const fetchImpl = modelsResponse([
+			{ id: "qwen", context_window: 40960 },
+			{ id: "plain" },
+			{ id: "qwen", context_window: 40960 },
+			{ id: "", context_window: 1 },
+			{ id: "odd", context_window: "40960" },
+		]);
+
+		const models = await discoverDynamoModels(config, 1000, fetchImpl, noEnv);
+
+		expect(models.map((model) => [model.id, model.contextWindow])).toEqual([
+			["qwen", 40960],
+			["plain", DEFAULT_DYNAMO_CONTEXT_WINDOW],
+			["odd", DEFAULT_DYNAMO_CONTEXT_WINDOW],
+		]);
+		expect(models.every((model) => model.maxTokens === DEFAULT_DYNAMO_MAX_TOKENS)).toBe(true);
+	});
+
+	it("applies the explicit override to every discovered model", async () => {
+		const fetchImpl = modelsResponse([{ id: "qwen", context_window: 40960 }, { id: "plain" }]);
+
+		const models = await discoverDynamoModels(config, 1000, fetchImpl, { DYNAMO_CONTEXT_WINDOW: "32768" });
+
+		expect(models.map((model) => model.contextWindow)).toEqual([32768, 32768]);
+	});
+
+	it("returns no models when discovery fails but still surfaces bad overrides", async () => {
+		const failing: typeof fetch = async () => {
+			throw new Error("connection refused");
+		};
+		const rejected: typeof fetch = async () => ({ ok: false }) as Response;
+
+		expect(await discoverDynamoModels(config, 1000, failing, noEnv)).toEqual([]);
+		expect(await discoverDynamoModels(config, 1000, rejected, noEnv)).toEqual([]);
+		await expect(
+			discoverDynamoModels(config, 1000, modelsResponse([{ id: "qwen" }]), { DYNAMO_MAX_TOKENS: "many" }),
+		).rejects.toThrow(/DYNAMO_MAX_TOKENS/);
 	});
 });

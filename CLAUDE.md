@@ -63,7 +63,7 @@ python3 -m unittest discover -s hermes-plugin/tests
 
 | Prefix | Direction | Examples |
 |---|---|---|
-| `DYNAMO_*` | client config (we read) | `DYNAMO_BASE_URL`, `DYNAMO_API_KEY` |
+| `DYNAMO_*` | client config (we read) | `DYNAMO_BASE_URL`, `DYNAMO_API_KEY`, `DYNAMO_CONTEXT_WINDOW`, `DYNAMO_MAX_TOKENS` |
 | `DYN_AGENT_*` | session identity, parent link, and lifecycle control | `DYN_AGENT_SESSION_ID`, `DYN_AGENT_PARENT_SESSION_ID`, `DYN_AGENT_SESSION_FINAL` |
 | `DYN_REQUEST_TRACE*` | request trace switch and tool bridge | `DYN_REQUEST_TRACE`, `DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` |
 | `PI_SUBAGENT_*` | pi-subagents bookkeeping (we read only) | `PI_SUBAGENT_CHILD`, `PI_SUBAGENT_RUN_ID`, `PI_SUBAGENT_CHILD_AGENT`, `PI_SUBAGENT_CHILD_INDEX` |

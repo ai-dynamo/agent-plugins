@@ -13,7 +13,7 @@ latest published Pi packages.
 
 ## What it does
 
-- **Model provider** — registers `dynamo`, discovers models from `/v1/models` (falls back to `dynamo/default`), and streams via Pi's OpenAI-compatible path.
+- **Model provider** — registers `dynamo`, discovers models from `/v1/models` (falls back to `dynamo/default`), and streams via Pi's OpenAI-compatible path. Each model's context window comes from the `context_window` Dynamo advertises in that listing, so Pi compacts before the engine rejects the prompt. See [Model limits](#model-limits).
 - **Session headers** — adds `x-dynamo-session-id` and optional parent headers so Dynamo can attribute each LLM request as a session in its trace.
 - **Subagent session ids** — gives each [pi-subagents](https://github.com/nicobailon/pi-subagents) child its own session id. See [Subagent session ids](#subagent-session-ids).
 - **Tool-event relay** — optionally pushes Pi `tool_start` / `tool_end` / `tool_error` events to Dynamo over ZMQ so one trace shows LLM spans and tool spans together.
@@ -71,6 +71,8 @@ The only required setting is the connection (`DYNAMO_BASE_URL`). Everything belo
 | --- | --- | --- |
 | `DYNAMO_BASE_URL` | `http://127.0.0.1:8000/v1` | Dynamo endpoint root (falls back to `OPENAI_BASE_URL`). |
 | `DYNAMO_API_KEY` | `dynamo-local` | Bearer token. |
+| `DYNAMO_CONTEXT_WINDOW` | advertised, else `128000` | Context window in tokens. See [Model limits](#model-limits). |
+| `DYNAMO_MAX_TOKENS` | `8192` | Output cap sent as `max_tokens`. Must be below the context window. |
 | `DYN_REQUEST_TRACE` | off | Enables the optional tool relay. Dynamo itself owns request-trace capture. |
 | `DYN_AGENT_SESSION_ID` | unset | Optional parent session seed for [session linking](#session-linking) in subagents. |
 | `DYN_AGENT_PARENT_SESSION_ID` | unset | Parent session; set manually to override the bridge. |
@@ -92,6 +94,17 @@ When a tool-event endpoint is set, Pi connects a ZMQ PUSH socket and sends one m
 
 The record uses Dynamo's `dynamo.request.trace.v1` schema (`event_type`, `event_source`, `agent_context`, and a `tool` object with timing/status). Dynamo owns the PULL bind side, so multiple Pi processes and subagents can all connect as producers. Terminal `tool_end` / `tool_error` records are self-contained.
 </details>
+
+## Model limits
+
+Pi compacts the conversation against the model's `contextWindow` and sends `maxTokens` as `max_tokens` on every request. The provider resolves both per model, in this order:
+
+| Limit | 1. Explicit | 2. Advertised | 3. Default |
+| --- | --- | --- | --- |
+| `contextWindow` | `DYNAMO_CONTEXT_WINDOW` | `context_window` from `GET /v1/models` | `128000` |
+| `maxTokens` | `DYNAMO_MAX_TOKENS` | not read | `8192` |
+
+Dynamo's frontend lists each served model's engine context length as `context_window`; the OpenAI schema has no such field, so other OpenAI-compatible endpoints fall through to the default. Set `DYNAMO_CONTEXT_WINDOW` for an endpoint that advertises nothing, or to run below the engine limit. A blank value means unset. Any other non-integer, zero, or negative value, or a `maxTokens` at or above the resolved window, fails provider registration with a message naming the variable rather than silently falling back.
 
 ## Session linking
 
