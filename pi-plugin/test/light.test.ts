@@ -14,13 +14,16 @@ import {
 	DEFAULT_DYNAMO_CONTEXT_WINDOW,
 	DEFAULT_DYNAMO_MAX_TOKENS,
 	DEFAULT_DYNAMO_MODEL_ID,
+	describeDynamoModelLimits,
 	discoverDynamoModels,
 	DynamoToolEventPublisher,
 	DynamoToolEventRelay,
 	DYNAMO_API,
 	readDynamoConfig,
+	resolveDynamoModelLimits,
 	sendDynamoSessionFinal,
 	type DynamoConfig,
+	type DynamoModelLimits,
 	type DynamoRequestTraceRecord,
 	type ToolEventSocket,
 } from "../src/index.js";
@@ -220,7 +223,7 @@ describe("model limits", () => {
 	}
 
 	it("falls back to the defaults when nothing is configured", () => {
-		const [created] = createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, new Map(), noEnv);
+		const [created] = createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, { env: noEnv });
 
 		expect(created).toMatchObject({
 			id: "served",
@@ -230,17 +233,17 @@ describe("model limits", () => {
 	});
 
 	it("uses the advertised context window before the default", () => {
-		const served = new Map([["served", 40960]]);
-		const [created] = createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, served, noEnv);
+		const servedContextWindows = new Map([["served", 40960]]);
+		const [created] = createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, { servedContextWindows, env: noEnv });
 
 		expect(created?.contextWindow).toBe(40960);
 		expect(created?.maxTokens).toBe(DEFAULT_DYNAMO_MAX_TOKENS);
 	});
 
 	it("uses the explicit overrides before the advertised values", () => {
-		const served = new Map([["served", 40960]]);
+		const servedContextWindows = new Map([["served", 40960]]);
 		const env = { DYNAMO_CONTEXT_WINDOW: " 65536 ", DYNAMO_MAX_TOKENS: "4096" };
-		const [created] = createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, served, env);
+		const [created] = createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, { servedContextWindows, env });
 
 		expect(created?.contextWindow).toBe(65536);
 		expect(created?.maxTokens).toBe(4096);
@@ -248,7 +251,7 @@ describe("model limits", () => {
 
 	it("treats a blank override as unset", () => {
 		const env = { DYNAMO_CONTEXT_WINDOW: "", DYNAMO_MAX_TOKENS: "   " };
-		const [created] = createDynamoModels([], DEFAULT_DYNAMO_BASE_URL, new Map(), env);
+		const [created] = createDynamoModels([], DEFAULT_DYNAMO_BASE_URL, { env });
 
 		expect(created).toMatchObject({
 			id: DEFAULT_DYNAMO_MODEL_ID,
@@ -259,24 +262,63 @@ describe("model limits", () => {
 
 	it("rejects overrides that are not positive integers", () => {
 		for (const value of ["lots", "0", "-1", "1.5"]) {
-			expect(() => createDynamoModels([], DEFAULT_DYNAMO_BASE_URL, new Map(), { DYNAMO_MAX_TOKENS: value })).toThrow(
+			expect(() => createDynamoModels([], DEFAULT_DYNAMO_BASE_URL, { env: { DYNAMO_MAX_TOKENS: value } })).toThrow(
 				/DYNAMO_MAX_TOKENS must be a positive integer/,
 			);
 		}
-		expect(() =>
-			createDynamoModels([], DEFAULT_DYNAMO_BASE_URL, new Map(), { DYNAMO_CONTEXT_WINDOW: "wide" }),
-		).toThrow(/DYNAMO_CONTEXT_WINDOW must be a positive integer/);
+		expect(() => createDynamoModels([], DEFAULT_DYNAMO_BASE_URL, { env: { DYNAMO_CONTEXT_WINDOW: "wide" } })).toThrow(
+			/DYNAMO_CONTEXT_WINDOW must be a positive integer/,
+		);
 	});
 
 	it("rejects an output cap at or above the context window", () => {
-		const served = new Map([["served", 8192]]);
+		const servedContextWindows = new Map([["served", 8192]]);
 
-		expect(() => createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, served, noEnv)).toThrow(
+		expect(() => createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, { servedContextWindows, env: noEnv })).toThrow(
 			/max tokens 8192 must be below the context window 8192/,
 		);
 		expect(() =>
-			createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, new Map(), { DYNAMO_MAX_TOKENS: "200000" }),
+			createDynamoModels(["served"], DEFAULT_DYNAMO_BASE_URL, { env: { DYNAMO_MAX_TOKENS: "200000" } }),
 		).toThrow(/max tokens 200000 must be below the context window 128000/);
+	});
+
+	it("reports where each limit came from", () => {
+		const servedContextWindows = new Map([["served", 40960]]);
+
+		expect(resolveDynamoModelLimits("served", { servedContextWindows, env: noEnv })).toEqual({
+			contextWindow: 40960,
+			contextWindowSource: "advertised",
+			maxTokens: DEFAULT_DYNAMO_MAX_TOKENS,
+			maxTokensSource: "default",
+		});
+		expect(
+			resolveDynamoModelLimits("served", {
+				servedContextWindows,
+				env: { DYNAMO_CONTEXT_WINDOW: "32768", DYNAMO_MAX_TOKENS: "4096" },
+			}),
+		).toEqual({
+			contextWindow: 32768,
+			contextWindowSource: "DYNAMO_CONTEXT_WINDOW",
+			maxTokens: 4096,
+			maxTokensSource: "DYNAMO_MAX_TOKENS",
+		});
+		expect(resolveDynamoModelLimits("other", { servedContextWindows, env: noEnv })).toMatchObject({
+			contextWindow: DEFAULT_DYNAMO_CONTEXT_WINDOW,
+			contextWindowSource: "default",
+		});
+	});
+
+	it("describes resolved limits in one line per model", () => {
+		const limits: DynamoModelLimits = {
+			contextWindow: 40960,
+			contextWindowSource: "advertised",
+			maxTokens: 8192,
+			maxTokensSource: "default",
+		};
+
+		expect(describeDynamoModelLimits("qwen", limits)).toBe(
+			"pi-dynamo-provider: qwen contextWindow 40960 (advertised), maxTokens 8192 (default)",
+		);
 	});
 
 	it("reads advertised context windows from the models list", async () => {
@@ -288,7 +330,7 @@ describe("model limits", () => {
 			{ id: "odd", context_window: "40960" },
 		]);
 
-		const models = await discoverDynamoModels(config, 1000, fetchImpl, noEnv);
+		const models = await discoverDynamoModels(config, 1000, { fetchImpl, env: noEnv });
 
 		expect(models.map((model) => [model.id, model.contextWindow])).toEqual([
 			["qwen", 40960],
@@ -298,12 +340,21 @@ describe("model limits", () => {
 		expect(models.every((model) => model.maxTokens === DEFAULT_DYNAMO_MAX_TOKENS)).toBe(true);
 	});
 
-	it("applies the explicit override to every discovered model", async () => {
+	it("applies the explicit override to every discovered model and reports it", async () => {
 		const fetchImpl = modelsResponse([{ id: "qwen", context_window: 40960 }, { id: "plain" }]);
+		const reported: string[] = [];
 
-		const models = await discoverDynamoModels(config, 1000, fetchImpl, { DYNAMO_CONTEXT_WINDOW: "32768" });
+		const models = await discoverDynamoModels(config, 1000, {
+			fetchImpl,
+			env: { DYNAMO_CONTEXT_WINDOW: "32768" },
+			onLimits: (modelId, limits) => reported.push(describeDynamoModelLimits(modelId, limits)),
+		});
 
 		expect(models.map((model) => model.contextWindow)).toEqual([32768, 32768]);
+		expect(reported).toEqual([
+			"pi-dynamo-provider: qwen contextWindow 32768 (DYNAMO_CONTEXT_WINDOW), maxTokens 8192 (default)",
+			"pi-dynamo-provider: plain contextWindow 32768 (DYNAMO_CONTEXT_WINDOW), maxTokens 8192 (default)",
+		]);
 	});
 
 	it("returns no models when discovery fails but still surfaces bad overrides", async () => {
@@ -312,10 +363,13 @@ describe("model limits", () => {
 		};
 		const rejected: typeof fetch = async () => ({ ok: false }) as Response;
 
-		expect(await discoverDynamoModels(config, 1000, failing, noEnv)).toEqual([]);
-		expect(await discoverDynamoModels(config, 1000, rejected, noEnv)).toEqual([]);
+		expect(await discoverDynamoModels(config, 1000, { fetchImpl: failing, env: noEnv })).toEqual([]);
+		expect(await discoverDynamoModels(config, 1000, { fetchImpl: rejected, env: noEnv })).toEqual([]);
 		await expect(
-			discoverDynamoModels(config, 1000, modelsResponse([{ id: "qwen" }]), { DYNAMO_MAX_TOKENS: "many" }),
+			discoverDynamoModels(config, 1000, {
+				fetchImpl: modelsResponse([{ id: "qwen" }]),
+				env: { DYNAMO_MAX_TOKENS: "many" },
+			}),
 		).rejects.toThrow(/DYNAMO_MAX_TOKENS/);
 	});
 });

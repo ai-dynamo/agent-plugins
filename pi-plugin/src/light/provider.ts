@@ -31,14 +31,36 @@ export interface DynamoEnvironment extends DynamoSessionEnvironment {
 	DYNAMO_BASE_URL?: string;
 	OPENAI_BASE_URL?: string;
 	DYNAMO_API_KEY?: string;
-	/** Context window in tokens. Overrides what the endpoint advertises. */
+	/** Overrides the context_window Dynamo advertises for each model. Without either, 128000. */
 	DYNAMO_CONTEXT_WINDOW?: string;
-	/** Output cap in tokens, sent as max_tokens on every request. */
+	/** Output cap sent as max_tokens on every request. Without it, 8192. */
 	DYNAMO_MAX_TOKENS?: string;
 	DYN_AGENT_SESSION_FINAL?: string;
 }
 
 export type DynamoLimitsEnvironment = Pick<DynamoEnvironment, "DYNAMO_CONTEXT_WINDOW" | "DYNAMO_MAX_TOKENS">;
+
+export type DynamoContextWindowSource = "DYNAMO_CONTEXT_WINDOW" | "advertised" | "default";
+export type DynamoMaxTokensSource = "DYNAMO_MAX_TOKENS" | "default";
+
+export interface DynamoModelLimits {
+	contextWindow: number;
+	contextWindowSource: DynamoContextWindowSource;
+	maxTokens: number;
+	maxTokensSource: DynamoMaxTokensSource;
+}
+
+export interface DynamoModelOptions {
+	/** context_window per model id, as listed by GET /v1/models. */
+	servedContextWindows?: ReadonlyMap<string, number>;
+	env?: DynamoLimitsEnvironment;
+	/** Receives each model's resolved limits and where each value came from. */
+	onLimits?: (modelId: string, limits: DynamoModelLimits) => void;
+}
+
+export interface DynamoDiscoveryOptions extends Pick<DynamoModelOptions, "env" | "onLimits"> {
+	fetchImpl?: typeof fetch;
+}
 
 export interface DynamoConfig {
 	baseUrl: string;
@@ -134,26 +156,58 @@ function limitFromEnv(env: DynamoLimitsEnvironment, key: keyof DynamoLimitsEnvir
 	return parsed;
 }
 
-export function createDynamoModels(
-	modelIds: string[],
-	baseUrl: string,
-	servedContextWindows: ReadonlyMap<string, number> = new Map(),
-	env: DynamoLimitsEnvironment = process.env,
-): ProviderModelConfig[] {
-	const ids = modelIds.length > 0 ? modelIds : [DEFAULT_DYNAMO_MODEL_ID];
+export function resolveDynamoModelLimits(
+	modelId: string,
+	{ servedContextWindows, env = process.env }: Pick<DynamoModelOptions, "servedContextWindows" | "env"> = {},
+): DynamoModelLimits {
 	// Pi compacts the conversation against contextWindow, so a window larger
 	// than the engine serves lets a prompt grow until Dynamo rejects it. The
 	// explicit override comes first for endpoints that advertise nothing or
 	// that an operator wants to run below the engine limit.
 	const envContextWindow = limitFromEnv(env, "DYNAMO_CONTEXT_WINDOW");
-	const maxTokens = limitFromEnv(env, "DYNAMO_MAX_TOKENS") ?? DEFAULT_DYNAMO_MAX_TOKENS;
+	const envMaxTokens = limitFromEnv(env, "DYNAMO_MAX_TOKENS");
+	const served = servedContextWindows?.get(modelId);
+
+	let contextWindow: number;
+	let contextWindowSource: DynamoContextWindowSource;
+	if (envContextWindow !== undefined) {
+		contextWindow = envContextWindow;
+		contextWindowSource = "DYNAMO_CONTEXT_WINDOW";
+	} else if (served !== undefined) {
+		contextWindow = served;
+		contextWindowSource = "advertised";
+	} else {
+		contextWindow = DEFAULT_DYNAMO_CONTEXT_WINDOW;
+		contextWindowSource = "default";
+	}
+
+	const maxTokens = envMaxTokens ?? DEFAULT_DYNAMO_MAX_TOKENS;
+	const maxTokensSource: DynamoMaxTokensSource = envMaxTokens !== undefined ? "DYNAMO_MAX_TOKENS" : "default";
+
+	if (maxTokens >= contextWindow) {
+		throw new Error(
+			`Dynamo model ${modelId}: max tokens ${maxTokens} must be below the context window ${contextWindow}`,
+		);
+	}
+	return { contextWindow, contextWindowSource, maxTokens, maxTokensSource };
+}
+
+export function describeDynamoModelLimits(modelId: string, limits: DynamoModelLimits): string {
+	return (
+		`pi-dynamo-provider: ${modelId} contextWindow ${limits.contextWindow} (${limits.contextWindowSource}), ` +
+		`maxTokens ${limits.maxTokens} (${limits.maxTokensSource})`
+	);
+}
+
+export function createDynamoModels(
+	modelIds: string[],
+	baseUrl: string,
+	options: DynamoModelOptions = {},
+): ProviderModelConfig[] {
+	const ids = modelIds.length > 0 ? modelIds : [DEFAULT_DYNAMO_MODEL_ID];
 	return ids.map((id) => {
-		const contextWindow = envContextWindow ?? servedContextWindows.get(id) ?? DEFAULT_DYNAMO_CONTEXT_WINDOW;
-		if (maxTokens >= contextWindow) {
-			throw new Error(
-				`Dynamo model ${id}: max tokens ${maxTokens} must be below the context window ${contextWindow}`,
-			);
-		}
+		const limits = resolveDynamoModelLimits(id, options);
+		options.onLimits?.(id, limits);
 		return {
 			id,
 			name: id,
@@ -162,8 +216,8 @@ export function createDynamoModels(
 			reasoning: false,
 			input: ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow,
-			maxTokens,
+			contextWindow: limits.contextWindow,
+			maxTokens: limits.maxTokens,
 			compat: dynamoOpenAICompat,
 		};
 	});
@@ -172,9 +226,9 @@ export function createDynamoModels(
 export async function discoverDynamoModels(
 	config: DynamoConfig,
 	timeoutMs = 2000,
-	fetchImpl: typeof fetch = fetch,
-	env: DynamoLimitsEnvironment = process.env,
+	options: DynamoDiscoveryOptions = {},
 ): Promise<ProviderModelConfig[]> {
+	const { fetchImpl = fetch, ...modelOptions } = options;
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), timeoutMs);
 	let body: OpenAIModelsResponse;
@@ -203,7 +257,7 @@ export async function discoverDynamoModels(
 	}
 	// Limits are validated outside the try block on purpose: a bad override is
 	// an operator error, not a discovery failure to paper over with defaults.
-	return createDynamoModels([...new Set(ids)], config.baseUrl, servedContextWindows, env);
+	return createDynamoModels([...new Set(ids)], config.baseUrl, { ...modelOptions, servedContextWindows });
 }
 
 function toOpenAICompletionsModel(model: Model<Api>): Model<"openai-completions"> {

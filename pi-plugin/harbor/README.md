@@ -18,7 +18,7 @@ harbor run \
 
 Set `DYN_AGENT_SESSION_FINAL=0` for a plain KV-routing baseline so the terminal control body is not forwarded as model work.
 
-`DYNAMO_CONTEXT_WINDOW` and `DYNAMO_MAX_TOKENS` pass through Harbor's `--agent-env` like the variables above; see the plugin's [Model limits](../README.md#model-limits).
+`DYNAMO_CONTEXT_WINDOW` and `DYNAMO_MAX_TOKENS` pass through Harbor's `--agent-env` like the variables above. `DYNAMO_CONTEXT_WINDOW` overrides the `context_window` Dynamo advertises for each model. Without either, the window is 128000. The provider writes the resolved limits and their sources to `/logs/agent/pi.txt`, one line per model. See the plugin's [Model limits](../README.md#model-limits).
 
 ## Prepared task images
 
