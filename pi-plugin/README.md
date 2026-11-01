@@ -20,6 +20,8 @@ latest published Pi packages.
 
 Session headers are always sent when Pi provides a session id; `DYN_REQUEST_TRACE` gates only the optional tool-event relay. Headers carry identity only; they do not activate sticky or session-aware routing.
 
+The provider does not send a terminal-session request when Pi exits. Dynamo policies own session expiry.
+
 ## Install
 
 ```bash
@@ -74,7 +76,6 @@ The only required setting is the connection (`DYNAMO_BASE_URL`). Everything belo
 | `DYN_REQUEST_TRACE` | off | Enables the optional tool relay. Dynamo itself owns request-trace capture. |
 | `DYN_AGENT_SESSION_ID` | unset | Optional parent session seed for [session linking](#session-linking) in subagents. |
 | `DYN_AGENT_PARENT_SESSION_ID` | unset | Parent session; set manually to override the bridge. |
-| `DYN_AGENT_SESSION_FINAL` | on | Sends a terminal session control request. Disable for endpoints without a lifecycle consumer, including a plain KV-routing baseline. |
 | `DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` | unset | Dynamo-bound ZMQ PULL endpoint for the tool relay. |
 
 `PI_SUBAGENT_CHILD` / `PI_SUBAGENT_RUN_ID` / `PI_SUBAGENT_CHILD_AGENT` / `PI_SUBAGENT_CHILD_INDEX` are **read, never set** — pi-subagents populates them and the provider uses them to derive the child `session_id` and parent link.

@@ -4,7 +4,7 @@ Harbor adapter for running Pi against Dynamo with one stable Dynamo session per 
 
 ## Use
 
-Upstream Harbor's built-in Pi adapter does not install external Pi providers and runs Pi with `--no-session`. `dynamo_pi:DynamoPi` installs the provider from a read-only mount, maps Harbor's per-trial `agent.session_id` to `DYN_AGENT_SESSION_ID`, and closes the session at the trial boundary.
+Upstream Harbor's built-in Pi adapter does not install external Pi providers and runs Pi with `--no-session`. `dynamo_pi:DynamoPi` installs the provider from a read-only mount and maps Harbor's per-trial `agent.session_id` to `DYN_AGENT_SESSION_ID`.
 
 ```bash
 export PYTHONPATH=/absolute/path/to/agent-plugins/pi-plugin/harbor${PYTHONPATH:+:$PYTHONPATH}
@@ -15,8 +15,6 @@ harbor run \
   --agent-env DYNAMO_BASE_URL=http://<dynamo-host>:8000/v1 \
   --mounts '[{"type":"bind","source":"/absolute/path/to/agent-plugins/pi-plugin","target":"/opt/pi-dynamo-provider","read_only":true}]'
 ```
-
-Set `DYN_AGENT_SESSION_FINAL=0` for a plain KV-routing baseline so the terminal control body is not forwarded as model work.
 
 ## Host networking
 

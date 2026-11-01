@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Upstream Harbor adapter for Pi through Dynamo."""
 
-import json
 import shlex
 from typing import override
 
@@ -45,14 +44,10 @@ class DynamoPi(Pi):
             raise ValueError("DYNAMO_BASE_URL is required for DynamoPi")
         if not self.session_id:
             raise RuntimeError("Harbor did not assign an agent session ID")
-        session_final = self._get_env("DYN_AGENT_SESSION_FINAL") or "1"
         return {
             "DYNAMO_BASE_URL": base_url,
             "DYNAMO_API_KEY": self._get_env("DYNAMO_API_KEY") or "dynamo-local",
             "DYN_AGENT_SESSION_ID": self.session_id,
-            "DYN_AGENT_SESSION_FINAL": (
-                "1" if session_final.lower() in {"1", "true", "yes", "on"} else "0"
-            ),
         }
 
     @override
@@ -73,30 +68,7 @@ class DynamoPi(Pi):
         cli_flags = self.build_cli_flags()
         if cli_flags:
             cli_flags += " "
-        final_body = shlex.quote(
-            json.dumps(
-                {
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": "."}],
-                    "max_tokens": 1,
-                    "stream": False,
-                }
-            )
-        )
         env = self._dynamo_env()
-        final_command = ""
-        if env["DYN_AGENT_SESSION_FINAL"] == "1":
-            final_command = (
-                "rc=$?; "
-                "curl --fail --silent --show-error --retry 3 --retry-all-errors "
-                '"$DYNAMO_BASE_URL/chat/completions" '
-                "-H 'Content-Type: application/json' "
-                '-H "Authorization: Bearer $DYNAMO_API_KEY" '
-                '-H "x-dynamo-session-id: $DYN_AGENT_SESSION_ID" '
-                "-H 'x-dynamo-session-final: true' "
-                f"--data {final_body} >/dev/null || exit 70; "
-                'exit "$rc"'
-            )
         await self.exec_as_agent(
             environment,
             command=(
@@ -105,8 +77,7 @@ class DynamoPi(Pi):
                 f"--provider dynamo --model {shlex.quote(model_name)} {cli_flags}"
                 f"{shlex.quote(instruction)} "
                 "2>&1 </dev/null | grep -v '\"type\":\"message_update\"' "
-                "| stdbuf -oL tee /logs/agent/pi.txt; "
-                f"{final_command}"
+                "| stdbuf -oL tee /logs/agent/pi.txt"
             ),
             env=env,
         )

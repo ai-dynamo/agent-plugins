@@ -58,13 +58,14 @@ python3 -m unittest discover -s hermes-plugin/tests
 - **No `pi-mono` core patches**. Everything we want must be expressible through the public `ExtensionAPI` (`registerProvider`, `streamSimple` wrapper, tool-event hooks). If you find yourself wanting a Pi core change, the answer is almost always "find a different angle in this repo first."
 - **Dynamo owns the ZMQ bind side** for tool events. We're a PUSH connect-side producer. Don't try to bind.
 - **Trace data is best-effort, not durable**. Don't add retry loops, persistent queues, or back-pressure that would block Pi/Hermes. The Pi `DynamoToolEventPublisher` drops events when its bounded queue is full; that's correct.
+- **Session headers carry identity only**. Pi does not emit a terminal-session request when it exits; Dynamo policies own session expiry.
 
 ## Env-var naming contract
 
 | Prefix | Direction | Examples |
 |---|---|---|
 | `DYNAMO_*` | client config (we read) | `DYNAMO_BASE_URL`, `DYNAMO_API_KEY` |
-| `DYN_AGENT_*` | session identity, parent link, and lifecycle control | `DYN_AGENT_SESSION_ID`, `DYN_AGENT_PARENT_SESSION_ID`, `DYN_AGENT_SESSION_FINAL` |
+| `DYN_AGENT_*` | session identity and parent link | `DYN_AGENT_SESSION_ID`, `DYN_AGENT_PARENT_SESSION_ID` |
 | `DYN_REQUEST_TRACE*` | request trace switch and tool bridge | `DYN_REQUEST_TRACE`, `DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` |
 | `PI_SUBAGENT_*` | pi-subagents bookkeeping (we read only) | `PI_SUBAGENT_CHILD`, `PI_SUBAGENT_RUN_ID`, `PI_SUBAGENT_CHILD_AGENT`, `PI_SUBAGENT_CHILD_INDEX` |
 | `OPENAI_BASE_URL` | OpenAI-compatibility fallback (we read) | only consulted when `DYNAMO_BASE_URL` is unset |

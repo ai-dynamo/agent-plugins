@@ -29,14 +29,12 @@ export interface DynamoEnvironment extends DynamoSessionEnvironment {
 	DYNAMO_BASE_URL?: string;
 	OPENAI_BASE_URL?: string;
 	DYNAMO_API_KEY?: string;
-	DYN_AGENT_SESSION_FINAL?: string;
 }
 
 export interface DynamoConfig {
 	baseUrl: string;
 	apiKey: string;
 	traceEnabled: boolean;
-	sessionFinalEnabled?: boolean;
 	sessionId?: string;
 	parentSessionId?: string;
 }
@@ -71,9 +69,6 @@ export function readDynamoConfig(env: DynamoEnvironment = process.env): DynamoCo
 		baseUrl: normalizeDynamoBaseUrl(envValue(env, "DYNAMO_BASE_URL") ?? envValue(env, "OPENAI_BASE_URL")),
 		apiKey: envValue(env, "DYNAMO_API_KEY") ?? DEFAULT_DYNAMO_API_KEY,
 		traceEnabled: isTruthyEnv(envValue(env, "DYN_REQUEST_TRACE")),
-		sessionFinalEnabled:
-			envValue(env, "DYN_AGENT_SESSION_FINAL") === undefined ||
-			isTruthyEnv(envValue(env, "DYN_AGENT_SESSION_FINAL")),
 		...(session.sessionId ? { sessionId: session.sessionId } : {}),
 		...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
 	};
@@ -172,43 +167,6 @@ export function createDynamoStreamSimple(
 			headers: buildDynamoHeaders(options?.headers, config, runtimeSessionId, createRequestId),
 		});
 	};
-}
-
-export async function sendDynamoSessionFinal(
-	config: DynamoConfig,
-	modelId: string,
-	runtimeSessionId: string | undefined,
-	createRequestId: () => string = randomUUID,
-	fetchImpl: typeof fetch = fetch,
-): Promise<boolean> {
-	const sessionId = config.sessionId ?? runtimeSessionId?.trim();
-	if (config.sessionFinalEnabled === false || !sessionId) return false;
-
-	try {
-		const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
-			method: "POST",
-			headers: buildDynamoHeaders(
-				{
-					"content-type": "application/json",
-					authorization: `Bearer ${config.apiKey}`,
-					"x-dynamo-session-final": "true",
-				},
-				config,
-				sessionId,
-				createRequestId,
-			),
-			body: JSON.stringify({
-				model: modelId.trim() || DEFAULT_DYNAMO_MODEL_ID,
-				messages: [{ role: "user", content: "." }],
-				max_tokens: 1,
-				stream: false,
-			}),
-			signal: AbortSignal.timeout(5000),
-		});
-		return response.ok;
-	} catch {
-		return false;
-	}
 }
 
 export function createDynamoProviderConfig(config: DynamoConfig, models: ProviderModelConfig[]): ProviderConfig {
